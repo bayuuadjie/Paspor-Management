@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      POSTGRES_USER: paspor
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?jalankan setup.sh dulu}
+      POSTGRES_DB: paspor
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paspor -d paspor"]
+      interval: 5s
+      retries: 12
+  ocr:
+    build: ./ocr
+    restart: unless-stopped
+    networks: [internal]
+  api:
+    build: ./backend
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      DATABASE_URL: postgres://paspor:${DB_PASSWORD}@db:5432/paspor
+      OCR_URL: http://ocr:8000
+      JWT_SECRET: ${JWT_SECRET:?jalankan setup.sh dulu}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+    depends_on:
+      db: { condition: service_healthy }
+      ocr: { condition: service_started }
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    networks: [internal, edge]
+    ports: ["80:80", "443:443"]
+    volumes: ["./certs:/etc/nginx/certs:ro"]
+    depends_on: [api]
+volumes: { pgdata: {} }
+
+networks:
+  internal: { internal: true }
+  edge: {}
