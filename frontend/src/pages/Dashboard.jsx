@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { Empty, ExpiryFlag, PageHead, tgl, useToast, VISABIO, FISIK, PRINT } from '../ui.jsx';
+import { Empty, PageHead, tgl, useToast, VISABIO, FISIK, PRINT } from '../ui.jsx';
 
 const Bars = ({ title, order, data, total }) => (
   <div className="card"><h3>{title}</h3>
@@ -15,7 +15,7 @@ export default function Dashboard() {
   useEffect(() => { api('/stats').then(setS).catch(e => notify(e.message, 'bad')); }, []);
   if (!s) return <p className="muted">Memuat…</p>;
   const cards = [['Total paspor', s.total], ['Paspor fisik ada', s.fisik.ada || 0], ['Sedang dipinjam', s.fisik.dipinjam || 0],
-    ['Visabio sudah', s.visabio.sudah || 0], ['Belum diprint', s.print.belum || 0], ['Visabio ≤ 30 hari', s.expiring_count]];
+    ['Visabio sudah', s.visabio.sudah || 0], ['Under review', s.visabio['under review'] || 0], ['Belum diprint', s.print.belum || 0]];
   return (
     <>
       <PageHead title="Ringkasan" sub="Kondisi data paspor jemaah saat ini." />
@@ -25,10 +25,10 @@ export default function Dashboard() {
         <Bars title="Print visabio" order={PRINT} data={s.print} total={s.total} />
         <Bars title="Paspor fisik" order={FISIK} data={s.fisik} total={s.total} />
       </div>
-      <div className="card"><h3>Visabio segera kadaluarsa</h3>
-        {s.expiring.length ? <ul className="plain">{s.expiring.map(p => <li key={p.id}><span><b>{p.name}</b><small className="muted"> {p.passport_number}</small></span>
-          <span>{tgl(p.visabio_expiry)} <ExpiryFlag d={p.visabio_expiry} /></span></li>)}</ul>
-          : <Empty>Tidak ada visabio yang kadaluarsa dalam 30 hari ke depan.</Empty>}</div>
+      <div className="card"><h3>Visabio under review</h3>
+        {s.review.length ? <ul className="plain">{s.review.map(p => <li key={p.id}><span><b>{p.name}</b><small className="muted"> {p.passport_number}</small></span>
+          <span>{tgl(p.visabio_date)}</span></li>)}</ul>
+          : <Empty>Tidak ada visabio yang sedang under review.</Empty>}</div>
     </>
   );
 }

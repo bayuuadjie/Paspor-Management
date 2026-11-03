@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS loans (
   id SERIAL PRIMARY KEY, passport_id INT NOT NULL REFERENCES passports(id) ON DELETE CASCADE,
   borrower TEXT NOT NULL, note TEXT, loaned_at TIMESTAMPTZ DEFAULT now(), returned_at TIMESTAMPTZ);`);
 await db.query(`ALTER TABLE passports ADD COLUMN IF NOT EXISTS phone TEXT, ADD COLUMN IF NOT EXISTS porsi_number TEXT, ADD COLUMN IF NOT EXISTS notes TEXT`);
+await db.query(`
+ALTER TABLE passports ADD COLUMN IF NOT EXISTS visabio_date DATE, ADD COLUMN IF NOT EXISTS bin_binti TEXT;
+ALTER TABLE passports DROP CONSTRAINT IF EXISTS passports_visabio_status_check, DROP CONSTRAINT IF EXISTS passports_passport_physical_check;
+UPDATE passports SET visabio_status='belum' WHERE visabio_status='mengulang';
+UPDATE passports SET passport_physical='hilang' WHERE passport_physical='tidak';
+ALTER TABLE passports ADD CONSTRAINT passports_visabio_status_check CHECK (visabio_status IN ('sudah','belum','under review','ditolak')),
+  ADD CONSTRAINT passports_passport_physical_check CHECK (passport_physical IN ('ada','dipinjam','diserahkan','hilang'));`);
 if (!(await db.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1")).rowCount) {
   await db.query("INSERT INTO users(username,full_name,password_hash,role) VALUES($1,'Administrator',$2,'admin')", [ADMIN_USER, bcrypt.hashSync(ADMIN_PASS, 10)]);
   console.log('Akun admin dibuat:', ADMIN_USER);
@@ -101,23 +108,22 @@ app.delete('/api/districts/:id', auth, wrap(async (req, res) => {
 }));
 
 // ---- paspor
-const F = ['name', 'passport_number', 'birth_date', 'kecamatan', 'visabio_status', 'visabio_expiry', 'visabio_printed', 'passport_physical', 'phone', 'porsi_number', 'notes'];
-const NULLABLE = ['birth_date', 'kecamatan', 'visabio_expiry', 'phone', 'porsi_number', 'notes'];
-const vals = b => F.map(k => { let v = typeof b[k] === 'string' ? b[k].trim() : b[k]; if (k === 'passport_number' && v) v = v.toUpperCase(); return v === '' && NULLABLE.includes(k) ? null : v === '' ? undefined : v; });
-const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', passport_physical = '' }) =>
+const F = ['name', 'bin_binti', 'passport_number', 'birth_date', 'kecamatan', 'visabio_status', 'visabio_date', 'visabio_printed', 'passport_physical', 'phone', 'porsi_number', 'notes'];
+const NULLABLE = ['bin_binti', 'birth_date', 'kecamatan', 'visabio_date', 'phone', 'porsi_number', 'notes'];const vals = b => F.map(k => { let v = typeof b[k] === 'string' ? b[k].trim() : b[k]; if (k === 'passport_number' && v) v = v.toUpperCase(); return v === '' && NULLABLE.includes(k) ? null : v === '' ? undefined : v; });
+const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', passport_physical = '', limit = '' }) =>
   (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR kecamatan=$2)
-    AND ($3='' OR visabio_status=$3) AND ($4='' OR passport_physical=$4) ORDER BY name`, [`%${q}%`, kecamatan, visabio_status, passport_physical])).rows;
+    AND ($3='' OR visabio_status=$3) AND ($4='' OR passport_physical=$4) ORDER BY name LIMIT $5`,
+    [`%${q}%`, kecamatan, visabio_status, passport_physical, Math.min(Number(limit) || 0, 50) || null])).rows;
 app.get('/api/passports', auth, wrap(async (req, res) => res.json(await queryPassports(req.query))));
 
 // ---- export (mengikuti filter yang sama dengan daftar)
 const cap = s => (s ? s[0].toUpperCase() + s.slice(1) : '');
 const idDate = s => (s ? s.split('-').reverse().join('/') : '');
 const EXPORT_COLS = [ // [judul, field, lebar, jenis]
-  ['Nama', 'name', 30], ['Nomor Paspor', 'passport_number', 16], ['Tanggal Lahir', 'birth_date', 14, 'date'], ['Kecamatan', 'kecamatan', 20],
-  ['Status Visabio', 'visabio_status', 16, 'enum'], ['Kadaluarsa Visabio', 'visabio_expiry', 18, 'date'], ['Print Visabio', 'visabio_printed', 14, 'enum'],
-  ['Paspor Fisik', 'passport_physical', 14, 'enum'], ['Nomor HP', 'phone', 16], ['Nomor Porsi', 'porsi_number', 16], ['Catatan', 'notes', 40]];
-app.get('/api/passports/export', auth, wrap(async (req, res) => {
-  const rows = await queryPassports(req.query), stamp = new Date().toISOString().slice(0, 10);
+  ['Nama', 'name', 30], ['Bin/Binti', 'bin_binti', 22], ['Nomor Paspor', 'passport_number', 16], ['Tanggal Lahir', 'birth_date', 14, 'date'], ['Kecamatan', 'kecamatan', 20],
+  ['Status Visabio', 'visabio_status', 16, 'enum'], ['Tanggal Visabio', 'visabio_date', 16, 'date'], ['Print Visabio', 'visabio_printed', 14, 'enum'],
+  ['Paspor Fisik', 'passport_physical', 14, 'enum'], ['Nomor HP', 'phone', 16], ['Nomor Porsi', 'porsi_number', 16], ['Catatan', 'notes', 40]];app.get('/api/passports/export', auth, wrap(async (req, res) => {
+const rows = await queryPassports(req.query), stamp = new Date().toISOString().slice(0, 10);
   if (req.query.format === 'csv') {
     const cell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s) && !/^\+?\d[\d ()-]*$/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; }; // cegah formula injection
     const lines = [['No', ...EXPORT_COLS.map(c => c[0])].map(cell).join(',')];
@@ -174,11 +180,9 @@ app.post('/api/loans/:id/return', auth, wrap(async (req, res) => {
 app.get('/api/stats', auth, wrap(async (_q, res) => {
   const g = async col => Object.fromEntries((await db.query(`SELECT ${col} k, count(*)::int n FROM passports GROUP BY 1`)).rows.map(r => [r.k, r.n]));
   const [visabio, print, fisik] = await Promise.all([g('visabio_status'), g('visabio_printed'), g('passport_physical')]);
-  const exp = `FROM passports WHERE visabio_expiry IS NOT NULL AND visabio_expiry <= CURRENT_DATE + 30`;
   res.json({
     total: Object.values(fisik).reduce((a, b) => a + b, 0), visabio, print, fisik,
-    expiring_count: (await db.query(`SELECT count(*)::int n ${exp}`)).rows[0].n,
-    expiring: (await db.query(`SELECT id,name,passport_number,visabio_expiry ${exp} ORDER BY visabio_expiry LIMIT 8`)).rows,
+    review: (await db.query(`SELECT id,name,passport_number,visabio_date FROM passports WHERE visabio_status='under review' ORDER BY visabio_date NULLS LAST, name LIMIT 8`)).rows,
   });
 }));
 

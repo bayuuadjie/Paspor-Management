@@ -36,7 +36,7 @@ label,.field>label{display:flex;flex-direction:column;gap:6px;font-size:.85rem;f
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}.stats .card{margin:0}
 .stat{display:grid;gap:4px}.stat b{font-size:1.9rem;letter-spacing:-.02em;line-height:1.1}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.cols .card{margin:0}.cols{margin-bottom:16px}
-.bar-row{display:grid;grid-template-columns:86px 1fr 32px;gap:10px;align-items:center;margin:8px 0;font-size:.9rem}.bar-row b{text-align:right}
+.bar-row{display:grid;grid-template-columns:110px 1fr 32px;gap:10px;align-items:center;margin:8px 0;font-size:.9rem}.bar-row b{text-align:right}
 .bar{height:8px;background:var(--surface-2);border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--primary);border-radius:99px}
 .plain{list-style:none;margin:0;padding:0}.plain li{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}.plain li:last-child{border:0}
 
@@ -98,3 +98,12 @@ textarea:focus{outline:none;border-color:var(--primary)}
 .ocr-log{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px;margin:-4px 0 16px}
 .ocr-log summary{cursor:pointer;font-weight:600;color:var(--muted)}
 .ocr-log pre{max-height:320px;overflow:auto;margin:10px 0;padding:10px;background:var(--surface-2);border-radius:8px;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+
+/* picker paspor (pencarian async) */
+.picker{position:relative}
+.picker-list{position:absolute;z-index:20;left:0;right:0;top:calc(100% + 4px);margin:0;padding:4px;list-style:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.18);max-height:320px;overflow:auto}
+.picker-list li{padding:9px 12px;border-radius:8px;cursor:pointer}
+.picker-list li.on{background:color-mix(in srgb,var(--primary) 14%,transparent)}
+.picker-list li.pad{cursor:default;padding:12px}
+.picked{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:42px;padding:6px 12px;border:1px solid var(--primary);border-radius:9px;background:color-mix(in srgb,var(--primary) 8%,var(--surface))}
+@media (max-width:900px){.side-theme{display:none}}

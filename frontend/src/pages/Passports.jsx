@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, Download, Pencil, Plus, Search, Trash2, Upload, ScanLine } from 'lucide-react';
 import { api, download } from '../api.js';
-import { Badge, Empty, ExpiryFlag, FISIK, Modal, PageHead, PRINT, Seg, tgl, useToast, VISABIO } from '../ui.jsx';
+import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Seg, tgl, useToast, VISABIO } from '../ui.jsx';
 
-const empty = { name: '', passport_number: '', birth_date: '', kecamatan: '', visabio_status: 'belum', visabio_expiry: '', visabio_printed: 'belum', passport_physical: 'ada', phone: '', porsi_number: '', notes: '' };
+const empty = { name: '', bin_binti: '', passport_number: '', birth_date: '', kecamatan: '', visabio_status: 'belum', visabio_date: '', visabio_printed: 'belum', passport_physical: 'ada', phone: '', porsi_number: '', notes: '' };
 
 function CameraModal({ onShot, onClose }) {
   const ref = useRef(); const [err, setErr] = useState('');
@@ -88,6 +88,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
       <div className="card form">
         <label className={low.includes('name') ? 'low' : ''}>Nama<input required value={f.name} onChange={e => set('name', e.target.value)} /></label>
+        <label><span>Bin/Binti <span className="opt">(opsional)</span></span><input placeholder="mis. bin Abdullah / binti Ahmad" value={f.bin_binti} onChange={e => set('bin_binti', e.target.value)} /></label>
         <label className={low.includes('passport_number') ? 'low' : ''}>Nomor paspor<input required value={f.passport_number} onChange={e => set('passport_number', e.target.value.toUpperCase())} /></label>
         <label className={low.includes('birth_date') ? 'low' : ''}>Tanggal lahir<input type="date" value={f.birth_date} onChange={e => set('birth_date', e.target.value)} /></label>
         <div className="field"><label htmlFor="kec">Kecamatan</label>
@@ -96,7 +97,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
           {newD !== null && <div className="row"><input autoFocus placeholder="Nama kecamatan" value={newD} onChange={e => setNewD(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addD())} /><button type="button" className="btn" onClick={addD}>Simpan</button></div>}</div>
         <div className="field"><label>Status visabio</label><Seg label="Status visabio" value={f.visabio_status} options={VISABIO} onChange={v => set('visabio_status', v)} /></div>
-        <label>Tanggal kadaluarsa visabio<input type="date" value={f.visabio_expiry} onChange={e => set('visabio_expiry', e.target.value)} /></label>
+        <label>Tanggal visabio<input type="date" value={f.visabio_date} onChange={e => set('visabio_date', e.target.value)} /></label>
         <div className="field"><label>Sudah print visabio</label><Seg label="Print visabio" value={f.visabio_printed} options={PRINT} onChange={v => set('visabio_printed', v)} /></div>
         <div className="field wide"><label>Paspor fisik</label><Seg label="Paspor fisik" value={f.passport_physical} options={FISIK} onChange={v => set('passport_physical', v)} /></div>
         <label><span>Nomor HP <span className="opt">(opsional)</span></span><input type="tel" inputMode="tel" placeholder="08xxxxxxxxxx" value={f.phone} onChange={e => set('phone', e.target.value)} /></label>
@@ -137,14 +138,14 @@ export default function Passports({ openNew }) {
         {sel('kecamatan', 'Semua kecamatan', districts.map(d => d.name))}{sel('visabio_status', 'Semua status visabio', VISABIO)}{sel('passport_physical', 'Semua paspor fisik', FISIK)}
       </div>
       <div className="card flush"><table className="tbl">
-        <thead><tr><th>Jemaah</th><th>Tgl lahir</th><th>Kecamatan</th><th>Visabio</th><th>Kadaluarsa</th><th>Print</th><th>Paspor fisik</th><th /></tr></thead>
+        <thead><tr><th>Jemaah</th><th>Tgl lahir</th><th>Kecamatan</th><th>Visabio</th><th>Tgl Visabio</th><th>Print</th><th>Paspor fisik</th><th /></tr></thead>
         <tbody>{(rows || []).map(p => (
           <tr key={p.id}>
-            <td data-label="Jemaah" title={p.notes || undefined}><b>{p.name}</b><small className="muted">{p.passport_number}</small>
+            <td data-label="Jemaah" title={p.notes || undefined}><b>{p.name}</b>{p.bin_binti && <small className="muted">{p.bin_binti}</small>}<small className="muted">{p.passport_number}</small>
               {(p.phone || p.porsi_number) && <small className="muted">{[p.phone, p.porsi_number && `Porsi ${p.porsi_number}`].filter(Boolean).join(' · ')}</small>}</td>
             <td data-label="Tgl lahir">{tgl(p.birth_date)}</td><td data-label="Kecamatan">{p.kecamatan || '–'}</td>
             <td data-label="Visabio"><Badge v={p.visabio_status} /></td>
-            <td data-label="Kadaluarsa">{tgl(p.visabio_expiry)} <ExpiryFlag d={p.visabio_expiry} /></td>
+            <td data-label="Tgl visabio">{tgl(p.visabio_date)}</td>
             <td data-label="Print"><Badge v={p.visabio_printed} /></td><td data-label="Paspor fisik"><Badge v={p.passport_physical} /></td>
             <td className="act"><button className="icon" onClick={() => setForm(p)} aria-label="Ubah"><Pencil size={16} /></button>
               <button className="icon danger" onClick={() => del(p)} aria-label="Hapus"><Trash2 size={16} /></button></td>
