@@ -14,12 +14,9 @@ export default function Dashboard() {
   const notify = useToast(); const [s, setS] = useState(null);
   useEffect(() => { api('/stats').then(setS).catch(e => notify(e.message, 'bad')); }, []);
   if (!s) return <p className="muted">Memuat…</p>;
-  const cards = [['Total paspor', s.total], ['Paspor fisik ada', s.fisik.ada || 0], ['Sedang dipinjam', s.fisik.dipinjam || 0],
-    ['Visabio sudah', s.visabio.sudah || 0], ['Under review', s.visabio['under review'] || 0], ['Belum diprint', s.print.belum || 0]];
   return (
     <>
       <PageHead title="Ringkasan" sub="Kondisi data paspor jemaah saat ini." />
-      <div className="stats">{cards.map(([l, n]) => <div className="card stat" key={l}><span className="muted">{l}</span><b>{n}</b></div>)}</div>
       <div className="cols">
         <Bars title="Status visabio" order={VISABIO} data={s.visabio} total={s.total} />
         <Bars title="Print visabio" order={PRINT} data={s.print} total={s.total} />

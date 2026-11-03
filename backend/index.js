@@ -38,6 +38,10 @@ UPDATE passports SET visabio_status='belum' WHERE visabio_status='mengulang';
 UPDATE passports SET passport_physical='hilang' WHERE passport_physical='tidak';
 ALTER TABLE passports ADD CONSTRAINT passports_visabio_status_check CHECK (visabio_status IN ('sudah','belum','under review','ditolak')),
   ADD CONSTRAINT passports_passport_physical_check CHECK (passport_physical IN ('ada','dipinjam','diserahkan','hilang'));`);
+await db.query(`
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS borrower_phone TEXT, ADD COLUMN IF NOT EXISTS borrower_address TEXT,
+  ADD COLUMN IF NOT EXISTS loan_date DATE, ADD COLUMN IF NOT EXISTS due_date DATE;
+UPDATE loans SET loan_date = (loaned_at AT TIME ZONE 'Asia/Jakarta')::date WHERE loan_date IS NULL;`);
 if (!(await db.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1")).rowCount) {
   await db.query("INSERT INTO users(username,full_name,password_hash,role) VALUES($1,'Administrator',$2,'admin')", [ADMIN_USER, bcrypt.hashSync(ADMIN_PASS, 10)]);
   console.log('Akun admin dibuat:', ADMIN_USER);
@@ -160,13 +164,18 @@ app.delete('/api/passports/:id', auth, wrap(async (req, res) => { await db.query
 app.get('/api/loans', auth, wrap(async (_q, res) => res.json((await db.query(
   `SELECT l.*, p.name, p.passport_number FROM loans l JOIN passports p ON p.id=l.passport_id ORDER BY (l.returned_at IS NULL) DESC, l.loaned_at DESC`)).rows)));
 app.post('/api/loans', auth, wrap(async (req, res) => {
-  const { passport_id, borrower = '', note } = req.body, c = await db.connect();
-  if (!borrower.trim()) { c.release(); return res.status(400).json({ error: 'Nama peminjam wajib diisi' }); }
+  const { passport_id, borrower = '', borrower_phone, borrower_address, note, loan_date, due_date } = req.body;
+  const t = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  if (!borrower.trim()) return res.status(400).json({ error: 'Nama peminjam wajib diisi' });
+  if (loan_date && due_date && due_date < loan_date) return res.status(400).json({ error: 'Tanggal rencana kembali tidak boleh sebelum tanggal peminjaman' });
+  const c = await db.connect();
   try {
     await c.query('BEGIN');
     const up = await c.query("UPDATE passports SET passport_physical='dipinjam', updated_at=now() WHERE id=$1 AND passport_physical='ada' RETURNING id", [passport_id]);
     if (!up.rowCount) { await c.query('ROLLBACK'); return res.status(409).json({ error: 'Paspor fisik tidak berstatus "ada"' }); }
-    const r = await c.query('INSERT INTO loans(passport_id,borrower,note) VALUES($1,$2,$3) RETURNING *', [passport_id, borrower.trim(), note || null]);
+    const r = await c.query(`INSERT INTO loans(passport_id,borrower,borrower_phone,borrower_address,note,loan_date,due_date)
+      VALUES($1,$2,$3,$4,$5,COALESCE($6::date,(now() AT TIME ZONE 'Asia/Jakarta')::date),$7) RETURNING *`,
+      [passport_id, borrower.trim(), t(borrower_phone), t(borrower_address), t(note), t(loan_date), t(due_date)]);
     await c.query('COMMIT'); res.status(201).json(r.rows[0]);
   } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
 }));

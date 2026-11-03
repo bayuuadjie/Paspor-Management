@@ -29,6 +29,16 @@ function useHash() {
   return h;
 }
 
+function useWide(px = 901) {
+  const q = `(min-width: ${px}px)`;
+  const [wide, setWide] = useState(() => matchMedia(q).matches);
+  useEffect(() => {
+    const m = matchMedia(q); const f = () => setWide(m.matches);
+    f(); m.addEventListener('change', f); return () => m.removeEventListener('change', f);
+  }, [q]);
+  return wide;
+}
+
 function ThemeBtn({ theme, toggle }) {
   return <button className="icon" onClick={toggle} aria-label={theme === 'dark' ? 'Mode terang' : 'Mode gelap'} title={theme === 'dark' ? 'Mode terang' : 'Mode gelap'}>
     {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>;
@@ -57,8 +67,8 @@ function Login({ onLogin, theme, toggle }) {
 }
 
 export default function App() {
-  const [theme, toggle] = useTheme(); const page = useHash(); const [open, setOpen] = useState(false);
-  const [user, setUser] = useState(null); const [ready, setReady] = useState(!getToken());
+    const [theme, toggle] = useTheme(); const page = useHash(); const wide = useWide(); const [open, setOpen] = useState(false);
+    const [user, setUser] = useState(null); const [ready, setReady] = useState(!getToken());
   useEffect(() => {
     if (getToken()) api('/me').then(setUser).catch(() => setToken(null)).finally(() => setReady(true));
     const h = () => setUser(null); addEventListener('auth-expired', h); return () => removeEventListener('auth-expired', h);
@@ -79,7 +89,7 @@ export default function App() {
           <nav>{items.map(n => <a key={n.id} href={'#/' + n.id} className={n.id === cur.id ? 'on' : ''} aria-current={n.id === cur.id ? 'page' : undefined}><n.icon size={18} />{n.label}</a>)}</nav>
           <div className="side-f">
             <div className="who"><b>{user.full_name || user.username}</b><small>{user.role === 'admin' ? 'Admin' : 'Staf'}</small></div>
-            <ThemeBtn theme={theme} toggle={toggle} />
+              {wide && <ThemeBtn theme={theme} toggle={toggle} />}
             <button className="icon" onClick={() => { setToken(null); setUser(null); }} aria-label="Keluar" title="Keluar"><LogOut size={18} /></button>
           </div>
         </aside>

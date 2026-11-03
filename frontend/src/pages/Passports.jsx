@@ -88,7 +88,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
       <div className="card form">
         <label className={low.includes('name') ? 'low' : ''}>Nama<input required value={f.name} onChange={e => set('name', e.target.value)} /></label>
-        <label><span>Bin/Binti <span className="opt">(opsional)</span></span><input placeholder="mis. bin Abdullah / binti Ahmad" value={f.bin_binti} onChange={e => set('bin_binti', e.target.value)} /></label>
+        <label><span>Bin/Binti <span className="opt">(opsional)</span></span><input value={f.bin_binti} onChange={e => set('bin_binti', e.target.value)} /></label>
         <label className={low.includes('passport_number') ? 'low' : ''}>Nomor paspor<input required value={f.passport_number} onChange={e => set('passport_number', e.target.value.toUpperCase())} /></label>
         <label className={low.includes('birth_date') ? 'low' : ''}>Tanggal lahir<input type="date" value={f.birth_date} onChange={e => set('birth_date', e.target.value)} /></label>
         <div className="field"><label htmlFor="kec">Kecamatan</label>
