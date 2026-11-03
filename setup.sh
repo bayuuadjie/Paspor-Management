@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 set -e
 cd "$(dirname "$0")"
 command -v docker >/dev/null || { echo "Docker belum terpasang. Lihat README.md langkah 1."; exit 1; }

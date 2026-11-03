@@ -36,3 +36,7 @@ npm-debug.log*
 *.swp
 .DS_Store
 Thumbs.db
+
+.venv/
+ocr/.venv
+ocr/__pycache__

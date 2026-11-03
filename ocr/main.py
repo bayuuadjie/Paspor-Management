@@ -13,5 +13,5 @@ async def ocr(file: UploadFile):
     if len(r["missing"]) == 3:
         hint = " Foto terlihat buram, pastikan fokus dan tidak bergerak." if r["blurry"] else ""
         return JSONResponse(status_code=422, content={
-            "detail": "Label dan data paspor tidak terbaca. Foto halaman data lurus dari atas, terang, tanpa pantulan cahaya." + hint, "log": r["log"]})
+            "detail": "Label dan data paspor tidak terbaca. Foto halaman data lurus dari atas, terang, tanpa pantulan cahaya." + hint, "log": r["log"], "mrz_preview": r.get("mrz_preview")})
     return r

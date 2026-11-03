@@ -33,7 +33,7 @@ function CameraModal({ onShot, onClose }) {
 function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }) {
   const notify = useToast();
   const [f, setF] = useState(() => Object.fromEntries(Object.entries(initial).map(([k, v]) => [k, v ?? ''])));
-  const [cam, setCam] = useState(false); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null); const [newD, setNewD] = useState(null); const [low, setLow] = useState([]);  const [ocrLog, setOcrLog] = useState('');
+  const [cam, setCam] = useState(false); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null); const [newD, setNewD] = useState(null); const [low, setLow] = useState([]);  const [ocrLog, setOcrLog] = useState(''); const [ocrImg, setOcrImg] = useState('');
   const upRef = useRef(), capRef = useRef(); const set = (k, v) => { setF(p => ({ ...p, [k]: v })); setLow(l => l.filter(x => x !== k)); };
 
   const ocr = async blob => {
@@ -42,6 +42,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
       const fd = new FormData(); fd.append('file', blob, 'paspor.jpg');
       const r = await api('/ocr', { method: 'POST', body: fd });
       setOcrLog((r.log || []).join('\n'));
+      setOcrImg(r.mrz_preview || '');
       setF(p => ({ ...p, name: r.name || p.name, passport_number: r.passport_number || p.passport_number, birth_date: r.birth_date || p.birth_date }));
             const label = { name: 'nama', passport_number: 'nomor paspor', birth_date: 'tanggal lahir' };
       const check = Object.keys(label).filter(k => !r.missing.includes(k) && ((r.confidence[k] ?? 0) < 75 || r.conflict.includes(k)));
@@ -50,7 +51,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
         ? { t: 'warn', m: `Belum terbaca: ${r.missing.map(k => label[k]).join(', ')}. Isi manual atau foto ulang.${check.length ? ' Periksa juga: ' + check.map(k => label[k]).join(', ') + '.' : ''}` }
         : check.length ? { t: 'warn', m: `Terbaca, tetapi kurang yakin pada: ${check.map(k => label[k]).join(', ')}. Mohon periksa.` }
         : { t: 'ok', m: 'Terbaca dengan yakin. Tetap periksa sebelum menyimpan.' });
-    } catch (e) { setMsg({ t: 'bad', m: e.message }); setOcrLog((e.data?.log || []).join('\n')); } finally { setBusy(false); }
+    } catch (e) { setMsg({ t: 'bad', m: e.message }); setOcrLog((e.data?.log || []).join('\n')); setOcrImg(e.data?.mrz_preview || ''); } finally { setBusy(false); }
   };
   const openCam = () => (navigator.mediaDevices?.getUserMedia ? setCam(true) : capRef.current.click());
   const pick = e => { const file = e.target.files[0]; e.target.value = ''; if (file) ocr(file); };
@@ -80,6 +81,8 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
       </div>
       {msg && <p className={'note ' + msg.t} role="status">{msg.m}</p>}
       {ocrLog && <details className="ocr-log"><summary>Log OCR: apa yang terbaca</summary>
+      {ocrImg && <><p className="muted">Area MRZ yang dibaca OCR (harus berupa dua baris kode berhuruf kapital dan tanda &lt;):</p>
+      <img src={ocrImg} alt="Area MRZ" style={{ maxWidth: '100%', borderRadius: 8 }} /></>}
       <pre>{ocrLog}</pre><button type="button" className="btn sm" onClick={() => navigator.clipboard?.writeText(ocrLog).then(() => notify('Log disalin'))}>Salin log</button></details>}
       {cam && <CameraModal onShot={ocr} onClose={() => setCam(false)} />}
 

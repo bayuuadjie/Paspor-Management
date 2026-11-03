@@ -3,6 +3,7 @@ import re
 import time
 from datetime import date
 from difflib import SequenceMatcher, get_close_matches
+from typing import Any
 
 import cv2
 import numpy as np
@@ -82,6 +83,8 @@ def parse_date(t):
         m = re.search(r"(\d{1,2})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{4})", s)
         if m:
             d, mon, y = int(m[1]), int(m[2]), int(m[3])
+    if d is None or mon is None or y is None:
+        return None
     try:
         dt = date(y, mon, d)
     except (TypeError, ValueError):
@@ -140,6 +143,37 @@ def _parse_pair(l1, l2):
     return out
 
 
+def _locate_mrz(flat):
+    """Cari area MRZ: huruf dirapatkan menjadi batang horizontal; MRZ = dua batang berdekatan, sama lebar, paling bawah.
+    Mengembalikan daftar kotak baris (x0, y0, x1, y1) pada koordinat `flat`, atau [] bila tidak ketemu."""
+    H, W = flat.shape; y_off = int(H * 0.45); k = 1200 / W
+    small = cv2.resize(flat[y_off:], None, fx=k, fy=k, interpolation=cv2.INTER_AREA); sw = small.shape[1]
+    mask = 255 - strokes(small, 2)
+    bars = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (max(3, int(0.04 * sw)), 1)))
+    bars = cv2.morphologyEx(bars, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(5, int(0.12 * sw)), 3)))
+    cnts, _ = cv2.findContours(bars, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    bx = sorted((b for b in (cv2.boundingRect(c) for c in cnts) if b[2] >= 0.22 * sw and 6 <= b[3] <= 70), key=lambda b: b[1])
+    pair = None
+    for a, b in zip(bx, bx[1:]):
+        if abs(a[0] - b[0]) <= 0.06 * sw and abs((a[0] + a[2]) - (b[0] + b[2])) <= 0.06 * sw \
+                and 0 < b[1] - (a[1] + a[3]) <= 2.8 * max(a[3], b[3]) and 0.6 <= a[3] / b[3] <= 1.67:
+            pair = (a, b)                                  # pasangan paling bawah menang
+    chosen = pair or ((bx[-1],) if bx else ())
+    out = []
+    for (x, y, w, h) in chosen:
+        pad = int(0.45 * h)
+        out.append((max(0, int((x - 8) / k)), max(0, int((y - pad) / k) + y_off), min(W, int((x + w + 8) / k)), min(H, int((y + h + pad) / k) + y_off)))
+    return out
+
+
+def _jpeg_b64(img, max_w=900):
+    import base64
+    if img.shape[1] > max_w:
+        img = cv2.resize(img, None, fx=max_w / img.shape[1], fy=max_w / img.shape[1], interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return "data:image/jpeg;base64," + base64.b64encode(buf).decode() if ok else None
+
+
 def read_mrz(flat, L):
     """Baca 2 baris MRZ dari beberapa variasi gambar; hanya hasil yang lolos check digit yang dipakai."""
     H, W = flat.shape
@@ -149,6 +183,33 @@ def read_mrz(flat, L):
     else:                                             # MRZ ada di sekitar 12-20% tinggi halaman paling bawah
         tries = (("rata, 20% bawah", lambda c: c, 0.80), ("otsu, 20% bawah", otsu, 0.80), ("rata, 30% bawah", lambda c: c, 0.70),
                  ("otsu, 30% bawah", otsu, 0.70), ("goresan halus, 20% bawah", lambda c: strokes(c, 2), 0.80))
+    WL = "--oem 1 --psm {} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
+    boxes = _locate_mrz(flat) if H >= 0.3 * W else []
+    if boxes:
+        x0 = min(b[0] for b in boxes); y0 = min(b[1] for b in boxes); x1 = max(b[2] for b in boxes); y1 = max(b[3] for b in boxes)
+        L(f"Lokasi MRZ terdeteksi: x={x0}-{x1}, y={y0}-{y1} ({len(boxes)} baris)")
+        L.preview = _jpeg_b64(flat[y0:y1, x0:x1])
+        for name, fn in (("rata", lambda c: c), ("otsu", otsu), ("goresan halus", lambda c: strokes(c, 2))):
+            if L.left() < 8:
+                break
+            up = lambda c: cv2.copyMakeBorder(cv2.resize(c, None, fx=min(3.0, max(1.0, 1800 / c.shape[1])), fy=min(3.0, max(1.0, 1800 / c.shape[1])), interpolation=cv2.INTER_CUBIC), 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=255)
+            reads = []
+            if len(boxes) == 2:                                  # dua baris dibaca terpisah (--psm 7), lebih tahan baris yang saling menempel
+                for (bx0, by0, bx1, by1) in boxes:
+                    t_ = _tess_str(up(fn(flat[by0:by1, bx0:bx1])), WL.format(7))
+                    reads.append(re.sub(r"[^A-Z0-9<]", "", t_.upper()))
+            t_ = _tess_str(up(fn(flat[y0:y1, x0:x1])), WL.format(6))  # gabungan (--psm 6)
+            reads += [re.sub(r"[^A-Z0-9<]", "", l.upper()) for l in t_.splitlines()]
+            lines = [l for l in reads if len(l) >= 30]
+            L(f"MRZ [terdeteksi, {name}]: " + (" | ".join(l[:46] for l in lines[:4]) if lines else "tidak ada baris >= 30 karakter"))
+            for i in range(len(lines) - 1, -1, -1):
+                for l1 in ((lines[i - 1],) if i else ()) + ("",):
+                    out = _parse_pair(l1, lines[i])
+                    if out.get("passport_number") or out.get("birth_date"):
+                        L("   MRZ lolos check digit: " + ", ".join(f"{k_}={v}" for k_, v in out.items()))
+                        return out
+    else:
+        L("Lokasi MRZ tidak terdeteksi, memakai potongan 20%/30% bagian bawah foto")
     for name, fn, frac in tries:
         if L.left() < 8:
             break
@@ -175,6 +236,8 @@ class Log:
 
     def __call__(self, *a):
         self.lines.append(" ".join(str(x) for x in a))
+
+    preview = None
 
     def left(self):
         return 55 - (time.time() - self.t0)
@@ -423,7 +486,7 @@ def _no_label(cells, H, field):
                     hits.append((v, w["c"]))
         return (max(hits, key=lambda x: x[1])[0], 50) if hits else None
     if field == "birth_date":
-        ds = sorted({parse_date(c["text"]) for c in top} - {None})
+        ds = sorted(d for c in top if (d := parse_date(c["text"])) is not None)
         for a_ in ds:                                    # paspor berlaku 5/10 tahun: pasangan terbit-kadaluarsa bukan tanggal lahir
             for b_ in ds:
                 da, db = date.fromisoformat(a_), date.fromisoformat(b_)
@@ -510,7 +573,7 @@ def _number_roi(chans, shape, cellsL, a_name, L):
                 for c_ in cols:                                  # pecah baris menjadi kata (celah > 70 px), mis. "IDN" terpisah dari nomor
                     if start is None:
                         start = prev = c_
-                    elif c_ - prev > 70:
+                    elif prev is not None and c_ - prev > 70:
                         segs.append((start, prev)); start = prev = c_
                     else:
                         prev = c_
@@ -559,6 +622,8 @@ def read_passport(data):
             best = (m, g, T, cellsT, r, ang)
         if m >= 1 or L.left() < 40:
             break
+    if best is None:
+        raise RuntimeError("Tidak ada orientasi gambar yang dapat diproses")
     _, g, T, cellsT, rot, angle = best
     _dump(L, "Teks tebal (huruf cetak, motif dihapus)", cellsT)
     T3 = strokes(g, 3)                                                # lebih lembut: huruf tipis (I, label kecil) tetap ada
@@ -602,7 +667,7 @@ def read_passport(data):
         if r_:
             cands["passport_number"].append((r_[0], r_[1], "kanal-warna")); L(f"   => No. Paspor = {r_[0]!r} (yakin {r_[1]}%) lewat kanal warna lain")
     # --- 5) gabungkan semua sumber
-    result = {"name": "", "passport_number": "", "birth_date": ""}
+    result: dict[str, Any] = {"name": "", "passport_number": "", "birth_date": ""}
     conf, source, notes = {}, {}, []
     for f in FIELDS:
         vis = max(cands[f], key=lambda x: x[1]) if cands[f] else None
@@ -635,5 +700,5 @@ def read_passport(data):
             result["name"] = ""; conf.pop("name", None); source.pop("name", None)
     L("HASIL: " + "; ".join(f"{LABELS[f]}={result[f]!r} ({source.get(f, '-')}, {conf.get(f, 0)}%)" for f in FIELDS) + f"  [{time.time() - L.t0:.1f} detik]")
     result.update(confidence=conf, source=source, conflict=notes, missing=[f for f in FIELDS if not result[f]],
-                  blurry=bool(cv2.Laplacian(flat0, cv2.CV_64F).var() < 40), log=L.lines)
+                  blurry=bool(cv2.Laplacian(flat0, cv2.CV_64F).var() < 40), log=L.lines, mrz_preview=L.preview)
     return result

@@ -187,7 +187,7 @@ app.post('/api/ocr', auth, uploadImage, wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Tidak ada gambar' });
   const fd = new FormData(); fd.append('file', new Blob([req.file.buffer]), 'paspor.jpg');
   let r; try { r = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: fd }); } catch { return res.status(503).json({ error: 'Layanan OCR belum siap, coba lagi sebentar' }); }
-  const body = await r.json().catch(() => ({})); res.status(r.status).json(r.ok ? body : { error: body.detail || 'OCR gagal', log: body.log });
+  const body = await r.json().catch(() => ({})); res.status(r.status).json(r.ok ? body : { error: body.detail || 'OCR gagal', log: body.log, mrz_preview: body.mrz_preview });
 }));
 
 app.listen(4000, () => console.log('API siap di :4000'));
