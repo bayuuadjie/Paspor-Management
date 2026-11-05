@@ -107,3 +107,8 @@ textarea:focus{outline:none;border-color:var(--primary)}
 .picker-list li.pad{cursor:default;padding:12px}
 .picked{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:42px;padding:6px 12px;border:1px solid var(--primary);border-radius:9px;background:color-mix(in srgb,var(--primary) 8%,var(--surface))}
 @media (max-width:900px){.side-theme{display:none}}
+
+.photo-prev{position:relative;display:inline-block}
+.photo-prev img{display:block;max-width:260px;max-height:200px;border-radius:10px;border:1px solid var(--border)}
+.photo-prev .icon{position:absolute;top:6px;right:6px;background:var(--surface);border:1px solid var(--border)}
+.photo-full{display:block;max-width:100%;max-height:60vh;margin:0 auto 12px;border-radius:10px}

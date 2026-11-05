@@ -42,6 +42,8 @@ await db.query(`
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS borrower_phone TEXT, ADD COLUMN IF NOT EXISTS borrower_address TEXT,
   ADD COLUMN IF NOT EXISTS loan_date DATE, ADD COLUMN IF NOT EXISTS due_date DATE;
 UPDATE loans SET loan_date = (loaned_at AT TIME ZONE 'Asia/Jakarta')::date WHERE loan_date IS NULL;`);
+await db.query(`CREATE TABLE IF NOT EXISTS loan_photos (
+  loan_id INT PRIMARY KEY REFERENCES loans(id) ON DELETE CASCADE, mime TEXT NOT NULL, data BYTEA NOT NULL, created_at TIMESTAMPTZ DEFAULT now())`);
 if (!(await db.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1")).rowCount) {
   await db.query("INSERT INTO users(username,full_name,password_hash,role) VALUES($1,'Administrator',$2,'admin')", [ADMIN_USER, bcrypt.hashSync(ADMIN_PASS, 10)]);
   console.log('Akun admin dibuat:', ADMIN_USER);
@@ -161,9 +163,13 @@ app.put('/api/passports/:id', auth, wrap(async (req, res) => {
 app.delete('/api/passports/:id', auth, wrap(async (req, res) => { await db.query('DELETE FROM passports WHERE id=$1', [req.params.id]); res.sendStatus(204); }));
 
 // ---- peminjaman
-app.get('/api/loans', auth, wrap(async (_q, res) => res.json((await db.query(
-  `SELECT l.*, p.name, p.passport_number FROM loans l JOIN passports p ON p.id=l.passport_id ORDER BY (l.returned_at IS NULL) DESC, l.loaned_at DESC`)).rows)));
-app.post('/api/loans', auth, wrap(async (req, res) => {
+const queryLoans = async ({ status = '' }) => (await db.query(`
+  SELECT l.*, p.name, p.passport_number, (l.returned_at AT TIME ZONE 'Asia/Jakarta')::date AS returned_date,
+         EXISTS(SELECT 1 FROM loan_photos ph WHERE ph.loan_id = l.id) AS has_photo
+  FROM loans l JOIN passports p ON p.id = l.passport_id
+  WHERE ($1 = '' OR ($1 = 'open' AND l.returned_at IS NULL) OR ($1 = 'returned' AND l.returned_at IS NOT NULL))
+  ORDER BY (l.returned_at IS NULL) DESC, l.loan_date DESC NULLS LAST, l.id DESC`, [status])).rows;
+app.get('/api/loans', auth, wrap(async (req, res) => res.json(await queryLoans(req.query))));app.post('/api/loans', auth, wrap(async (req, res) => {
   const { passport_id, borrower = '', borrower_phone, borrower_address, note, loan_date, due_date } = req.body;
   const t = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
   if (!borrower.trim()) return res.status(400).json({ error: 'Nama peminjam wajib diisi' });
@@ -186,6 +192,55 @@ app.post('/api/loans/:id/return', auth, wrap(async (req, res) => {
 }));
 
 // ---- dashboard
+// ---- foto peminjaman
+const sniff = b => (!b || b.length < 12 ? null
+  : b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF ? 'image/jpeg'
+  : b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG' ? 'image/png'
+  : b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP' ? 'image/webp' : null);   // jenis file dari isinya, bukan dari klaim klien
+app.get('/api/loans/:id/photo', auth, wrap(async (req, res) => {
+  const r = (await db.query('SELECT mime,data FROM loan_photos WHERE loan_id=$1', [req.params.id])).rows[0];
+  if (!r) return res.status(404).json({ error: 'Belum ada foto' });
+  res.set({ 'Content-Type': r.mime, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }); res.send(r.data);
+}));
+app.put('/api/loans/:id/photo', auth, upload.single('photo'), wrap(async (req, res) => {
+  const mime = sniff(req.file && req.file.buffer);
+  if (!mime) return res.status(400).json({ error: 'File harus berupa gambar JPG, PNG, atau WebP' });
+  if (req.file.size > 4e6) return res.status(413).json({ error: 'Ukuran foto maksimal 4 MB' });
+  if (!(await db.query('SELECT 1 FROM loans WHERE id=$1', [req.params.id])).rowCount) return res.status(404).json({ error: 'Peminjaman tidak ditemukan' });
+  await db.query(`INSERT INTO loan_photos(loan_id,mime,data) VALUES($1,$2,$3)
+    ON CONFLICT (loan_id) DO UPDATE SET mime=EXCLUDED.mime, data=EXCLUDED.data, created_at=now()`, [req.params.id, mime, req.file.buffer]);
+  res.json({ ok: true });
+}));
+app.delete('/api/loans/:id/photo', auth, wrap(async (req, res) => { await db.query('DELETE FROM loan_photos WHERE loan_id=$1', [req.params.id]); res.sendStatus(204); }));
+
+// ---- export peminjaman (mengikuti filter status yang sama dengan daftar)
+const LOAN_COLS = [ // [judul, field, lebar, jenis]; field diawali _ = dihitung
+  ['Nama Jemaah', 'name', 28], ['Nomor Paspor', 'passport_number', 16], ['Peminjam', 'borrower', 24], ['No. Telepon', 'borrower_phone', 16], ['Alamat', 'borrower_address', 36],
+  ['Tanggal Peminjaman', 'loan_date', 18, 'date'], ['Rencana Dikembalikan', 'due_date', 20, 'date'], ['Tanggal Dikembalikan', 'returned_date', 20, 'date'],
+  ['Status', '_status', 22], ['Catatan', 'note', 36], ['Foto', '_photo', 8]];
+app.get('/api/loans/export', auth, wrap(async (req, res) => {
+  const rows = await queryLoans(req.query), stamp = new Date().toISOString().slice(0, 10), today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10); // WIB
+  const val = (r, k) => (k === '_status' ? (r.returned_at ? 'Dikembalikan' : r.due_date && r.due_date < today ? 'Dipinjam (terlambat)' : 'Dipinjam')
+    : k === '_photo' ? (r.has_photo ? 'Ada' : 'Tidak') : r[k]);
+  if (req.query.format === 'csv') {
+    const cell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s) && !/^\+?\d[\d ()-]*$/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
+    const lines = [['No', ...LOAN_COLS.map(c => c[0])].map(cell).join(',')];
+    rows.forEach((r, i) => lines.push([i + 1, ...LOAN_COLS.map(([, k, , t]) => (t === 'date' ? idDate(val(r, k)) : val(r, k)))].map(cell).join(',')));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="data-peminjaman-${stamp}.csv"`);
+    return res.send('\uFEFF' + lines.join('\r\n'));
+  }
+  const wb = new ExcelJS.Workbook(), ws = wb.addWorksheet('Peminjaman', { views: [{ state: 'frozen', ySplit: 1 }] });
+  ws.columns = [{ header: 'No', key: 'no', width: 6 }, ...LOAN_COLS.map(([header, key, width, t]) => ({ header, key, width, style: t === 'date' ? { numFmt: 'dd/mm/yyyy' } : {} }))];
+  rows.forEach((r, i) => ws.addRow({ no: i + 1, ...Object.fromEntries(LOAN_COLS.map(([, k, , t]) =>
+    [k, t === 'date' ? (val(r, k) ? new Date(val(r, k) + 'T00:00:00Z') : null) : val(r, k) ?? null])) }));
+  const head = ws.getRow(1); head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  head.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0C6B58' } }; });
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columns.length } };
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="data-peminjaman-${stamp}.xlsx"`);
+  await wb.xlsx.write(res); res.end();
+}));
 app.get('/api/stats', auth, wrap(async (_q, res) => {
   const g = async col => Object.fromEntries((await db.query(`SELECT ${col} k, count(*)::int n FROM passports GROUP BY 1`)).rows.map(r => [r.k, r.n]));
   const [visabio, print, fisik] = await Promise.all([g('visabio_status'), g('visabio_printed'), g('passport_physical')]);

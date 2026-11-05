@@ -9,6 +9,13 @@ export async function download(path, filename) {
   document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }
 
+export async function blobUrl(path) {
+  const r = await fetch('/api' + path, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (r.status === 401) { setToken(null); window.dispatchEvent(new Event('auth-expired')); }
+  if (!r.ok) throw new Error('Foto tidak bisa dimuat');
+  return URL.createObjectURL(await r.blob());
+}
+
 export async function api(path, opts = {}) {
   const isForm = opts.body instanceof FormData;
   const r = await fetch('/api' + path, {
