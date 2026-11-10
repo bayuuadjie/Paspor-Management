@@ -17,7 +17,8 @@ import {
   EyeOff,
   ShieldCheck,
   ArrowRight,
-  Loader2
+  Loader2,
+  X
 } from 'lucide-react';
 import { api, getToken, setToken } from './api.js';
 import { ToastHost } from './ui.jsx';
@@ -264,6 +265,14 @@ export default function App() {
               <span className="brand-title">Manajemen Paspor</span>
               <span className="brand-sub">Kemenag RI</span>
             </div>
+            <button
+              type="button"
+              className="icon side-close-btn"
+              onClick={() => setOpen(false)}
+              aria-label="Tutup menu"
+            >
+              <X size={18} />
+            </button>
           </div>
 
           <nav>
@@ -275,6 +284,7 @@ export default function App() {
                   href={'#/' + n.id}
                   className={active ? 'on' : ''}
                   aria-current={active ? 'page' : undefined}
+                  onClick={() => setOpen(false)}
                 >
                   <n.icon size={19} />
                   <span>{n.label}</span>
@@ -289,7 +299,7 @@ export default function App() {
               <b>{user.full_name || user.username}</b>
               <small className="muted">{user.role === 'admin' ? 'Administrator' : 'Staf Operasional'}</small>
             </div>
-            {wide && <ThemeBtn theme={theme} toggle={toggle} />}
+            <ThemeBtn theme={theme} toggle={toggle} />
             <button
               className="icon danger"
               onClick={() => {
@@ -311,11 +321,11 @@ export default function App() {
             <button className="icon" onClick={() => setOpen(true)} aria-label="Buka menu">
               <Menu size={20} />
             </button>
-            <div className="row" style={{ gap: '8px' }}>
-              <span className="brand-logo-wrap" style={{ width: '28px', height: '28px', borderRadius: '8px' }}>
+            <div className="row" style={{ gap: '8px', minWidth: 0 }}>
+              <span className="brand-logo-wrap" style={{ width: '28px', height: '28px', borderRadius: '8px', flexShrink: 0 }}>
                 <img src="/assets/logo.png" alt="Logo" className="brand-img" />
               </span>
-              <b>{cur.label}</b>
+              <b style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cur.label}</b>
             </div>
             <ThemeBtn theme={theme} toggle={toggle} />
           </header>

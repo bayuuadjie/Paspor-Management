@@ -257,14 +257,18 @@ export default function Loans() {
                   <small className="muted" style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.passport_number}</small>
                 </td>
                 <td data-label="Peminjam">
-                  <b>{l.borrower}</b>
-                  {l.borrower_phone && <small className="muted">{l.borrower_phone}</small>}
-                  {l.borrower_address && <small className="muted">{l.borrower_address}</small>}
+                  <div className="tbl-cell-stack">
+                    <b>{l.borrower}</b>
+                    {l.borrower_phone && <small className="muted">{l.borrower_phone}</small>}
+                    {l.borrower_address && <small className="muted">{l.borrower_address}</small>}
+                  </div>
                 </td>
                 <td data-label="Tgl pinjam">{tgl(l.loan_date)}</td>
                 <td data-label="Rencana kembali">
-                  <span>{tgl(l.due_date)}</span>
-                  <DueFlag loan={l} />
+                  <div className="tbl-cell-stack">
+                    <span>{tgl(l.due_date)}</span>
+                    <DueFlag loan={l} />
+                  </div>
                 </td>
                 <td data-label="Catatan">{l.note || '–'}</td>
                 <td data-label="Foto">
