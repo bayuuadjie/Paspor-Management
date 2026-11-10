@@ -1,4 +1,4 @@
-import express from 'express'; import pg from 'pg'; import bcrypt from 'bcryptjs'; import jwt from 'jsonwebtoken'; import multer from 'multer'; import ExcelJS from 'exceljs'; import PDFDocument from 'pdfkit';
+import express from 'express'; import pg from 'pg'; import bcrypt from 'bcryptjs'; import jwt from 'jsonwebtoken'; import multer from 'multer'; import ExcelJS from 'exceljs'; import PDFDocument from 'pdfkit'; import crypto from 'crypto';
 
 pg.types.setTypeParser(1082, v => v); // DATE tetap string 'YYYY-MM-DD' (tanpa geser zona waktu)
 const { DATABASE_URL, OCR_URL = 'http://ocr:8000', JWT_SECRET, ADMIN_USER = 'admin', ADMIN_PASS } = process.env;
@@ -15,10 +15,14 @@ const uploadImage = (req, res, next) => upload.single('file')(req, res, err => {
   next();
 });
 
+// Durasi idle session (10 menit dalam milidetik)
+const SESSION_IDLE_MS = 10 * 60 * 1000;
+
 await db.query(`
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL DEFAULT '',
-  password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'staf' CHECK (role IN ('admin','staf')), created_at TIMESTAMPTZ DEFAULT now());
+  password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'staf' CHECK (role IN ('admin','staf')), created_at TIMESTAMPTZ DEFAULT now(),
+  session_token TEXT, session_at TIMESTAMPTZ);
 CREATE TABLE IF NOT EXISTS districts (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS passports (
   id SERIAL PRIMARY KEY, name TEXT NOT NULL, passport_number TEXT UNIQUE NOT NULL, birth_date DATE, kecamatan TEXT,
@@ -30,6 +34,8 @@ CREATE TABLE IF NOT EXISTS passports (
 CREATE TABLE IF NOT EXISTS loans (
   id SERIAL PRIMARY KEY, passport_id INT NOT NULL REFERENCES passports(id) ON DELETE CASCADE,
   borrower TEXT NOT NULL, note TEXT, loaned_at TIMESTAMPTZ DEFAULT now(), returned_at TIMESTAMPTZ);`);
+// Migrasi kolom session ke tabel users yang sudah ada
+await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS session_token TEXT, ADD COLUMN IF NOT EXISTS session_at TIMESTAMPTZ`);
 await db.query(`ALTER TABLE passports ADD COLUMN IF NOT EXISTS phone TEXT, ADD COLUMN IF NOT EXISTS porsi_number TEXT, ADD COLUMN IF NOT EXISTS notes TEXT`);
 await db.query(`
 ALTER TABLE passports ADD COLUMN IF NOT EXISTS visabio_date DATE, ADD COLUMN IF NOT EXISTS bin_binti TEXT;
@@ -54,12 +60,36 @@ const wrap = f => (req, res) => f(req, res).catch(e => {
   if (['23514', '23502', '22007', '22008', '22P02'].includes(e.code)) return res.status(400).json({ error: 'Ada isian yang tidak valid' });
   console.error(e); res.status(500).json({ error: 'Terjadi kesalahan pada server' });
 });
+
+// ---- auth middleware dengan validasi session token & idle timeout
 const auth = async (req, res, next) => {
   try {
-    const { id } = jwt.verify((req.headers.authorization || '').slice(7), JWT_SECRET);
-    const u = (await db.query('SELECT id,username,full_name,role FROM users WHERE id=$1', [id])).rows[0];
-    if (!u) throw 0; req.user = u; next();
-  } catch { res.status(401).json({ error: 'Sesi berakhir, silakan login lagi' }); }
+    const { id, sid } = jwt.verify((req.headers.authorization || '').slice(7), JWT_SECRET);
+    const u = (await db.query('SELECT id,username,full_name,role,session_token,session_at FROM users WHERE id=$1', [id])).rows[0];
+    if (!u) throw new Error('user not found');
+
+    // Cek single-session: token sesi harus cocok
+    if (!u.session_token || u.session_token !== sid) {
+      return res.status(401).json({ error: 'Sesi tidak valid. Akun ini sudah masuk di perangkat lain.', code: 'SESSION_CONFLICT' });
+    }
+
+    // Cek idle timeout (10 menit)
+    const now = Date.now();
+    const lastActive = u.session_at ? new Date(u.session_at).getTime() : 0;
+    if (now - lastActive > SESSION_IDLE_MS) {
+      // Hapus session token agar tidak bisa digunakan lagi
+      await db.query('UPDATE users SET session_token=NULL, session_at=NULL WHERE id=$1', [id]);
+      return res.status(401).json({ error: 'Sesi habis karena tidak ada aktivitas selama 10 menit.', code: 'SESSION_IDLE' });
+    }
+
+    // Perbarui waktu aktif terakhir
+    await db.query('UPDATE users SET session_at=now() WHERE id=$1', [id]);
+
+    req.user = { id: u.id, username: u.username, full_name: u.full_name, role: u.role };
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'Sesi berakhir, silakan login lagi' });
+  }
 };
 const adminOnly = (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Hanya admin yang boleh' }));
 
@@ -71,8 +101,37 @@ app.post('/api/login', wrap(async (req, res) => {
   const { username = '', password = '' } = req.body;
   const u = (await db.query('SELECT * FROM users WHERE lower(username)=lower($1)', [username])).rows[0];
   if (!u || !bcrypt.compareSync(String(password), u.password_hash)) { recent(req.ip).push(Date.now()); return res.status(401).json({ error: 'Username atau password salah' }); }
-  res.json({ token: jwt.sign({ id: u.id }, JWT_SECRET, { expiresIn: '12h' }), user: { id: u.id, username: u.username, full_name: u.full_name, role: u.role } });
+
+  // Cek apakah akun sedang aktif di perangkat lain (< 10 menit dan session_token masih ada)
+  const now = Date.now();
+  const lastActive = u.session_at ? new Date(u.session_at).getTime() : 0;
+  const isSessionActive = Boolean(u.session_token) && (now - lastActive < SESSION_IDLE_MS);
+
+  if (isSessionActive) {
+    return res.status(409).json({
+      error: 'Akun ini sedang aktif digunakan di perangkat lain. Satu akun hanya dapat digunakan pada satu perangkat. Harap logout terlebih dahulu dari perangkat tersebut atau tunggu 10 menit tanpa aktivitas.',
+      code: 'SESSION_ACTIVE'
+    });
+  }
+
+  // Jika tidak ada sesi aktif atau sesi lama sudah kedaluwarsa (> 10 menit), buat sesi baru
+  const sid = crypto.randomBytes(32).toString('hex');
+  await db.query('UPDATE users SET session_token=$1, session_at=now() WHERE id=$2', [sid, u.id]);
+
+  // Sertakan sid di dalam JWT agar bisa divalidasi
+  const token = jwt.sign({ id: u.id, sid }, JWT_SECRET, { expiresIn: '12h' });
+  res.json({ token, user: { id: u.id, username: u.username, full_name: u.full_name, role: u.role } });
 }));
+
+// ---- logout: hapus session token di server
+app.post('/api/logout', wrap(async (req, res) => {
+  try {
+    const { id } = jwt.verify((req.headers.authorization || '').slice(7), JWT_SECRET);
+    await db.query('UPDATE users SET session_token=NULL, session_at=NULL WHERE id=$1', [id]);
+  } catch { /* token sudah tidak valid, abaikan */ }
+  res.json({ ok: true });
+}));
+
 app.get('/api/me', auth, (req, res) => res.json(req.user));
 
 // ---- pengguna (admin)
@@ -89,7 +148,8 @@ app.post('/api/users', auth, adminOnly, wrap(async (req, res) => {
 app.put('/api/users/:id', auth, adminOnly, wrap(async (req, res) => {
   const { password = '' } = req.body;
   if (password.length < 8) return res.status(400).json({ error: 'Password minimal 8 karakter' });
-  await db.query('UPDATE users SET password_hash=$1 WHERE id=$2', [bcrypt.hashSync(password, 10), req.params.id]); res.json({ ok: true });
+  // Ganti password juga invalidasi semua sesi aktif akun tersebut
+  await db.query('UPDATE users SET password_hash=$1, session_token=NULL, session_at=NULL WHERE id=$2', [bcrypt.hashSync(password, 10), req.params.id]); res.json({ ok: true });
 }));
 app.delete('/api/users/:id', auth, adminOnly, wrap(async (req, res) => {
   const id = Number(req.params.id);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   BookOpen,
   FileText,
@@ -20,7 +20,7 @@ import {
   Loader2,
   X
 } from 'lucide-react';
-import { api, getToken, setToken } from './api.js';
+import { api, getToken, logout, setToken } from './api.js';
 import { ToastHost } from './ui.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Passports from './pages/Passports.jsx';
@@ -36,6 +36,8 @@ const NAV = [
   { id: 'kecamatan', label: 'Kecamatan', icon: MapPin },
   { id: 'pengguna', label: 'Pengguna', icon: UsersIcon, admin: true },
 ];
+
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 menit tanpa aktivitas
 
 function useTheme() {
   const [t, setT] = useState(() => document.documentElement.dataset.theme || 'light');
@@ -70,6 +72,56 @@ function useWide(px = 960) {
   return wide;
 }
 
+// Hook untuk mendeteksi ketiadaan aktivitas pengguna selama 10 menit
+function useIdleTimer(user, onIdle) {
+  useEffect(() => {
+    if (!user) return;
+
+    const recordActivity = () => {
+      localStorage.setItem('paspor_last_act', String(Date.now()));
+    };
+
+    let lastRecord = 0;
+    const handleUserActivity = () => {
+      const now = Date.now();
+      // Throttle recording ke localStorage setiap 3 detik
+      if (now - lastRecord > 3000) {
+        lastRecord = now;
+        recordActivity();
+      }
+    };
+
+    recordActivity();
+
+    const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach(evt => window.addEventListener(evt, handleUserActivity, { passive: true }));
+
+    const checkIdle = () => {
+      const lastAct = Number(localStorage.getItem('paspor_last_act') || Date.now());
+      if (Date.now() - lastAct >= IDLE_TIMEOUT_MS) {
+        onIdle();
+      }
+    };
+
+    // Pengecekan rutin setiap 5 detik
+    const timer = setInterval(checkIdle, 5000);
+
+    // Langsung cek saat tab dibuka kembali dari background/minimize
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkIdle();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      events.forEach(evt => window.removeEventListener(evt, handleUserActivity));
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [user, onIdle]);
+}
+
 function ThemeBtn({ theme, toggle }) {
   return (
     <button
@@ -83,7 +135,7 @@ function ThemeBtn({ theme, toggle }) {
   );
 }
 
-function Login({ onLogin, theme, toggle }) {
+function Login({ onLogin, theme, toggle, notice = '' }) {
   const [f, setF] = useState({ username: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [err, setErr] = useState('');
@@ -128,7 +180,7 @@ function Login({ onLogin, theme, toggle }) {
               </div>
             </div>
 
-            <span className="login-badge">Sistem Informasi Paspor</span>
+            <span className="login-badge">SIMHAJ</span>
             <h1 className="login-title">Manajemen Paspor</h1>
             <p className="login-desc">Masuk untuk mengelola data paspor, verifikasi visabio, dan catatan peminjaman.</p>
           </div>
@@ -173,8 +225,14 @@ function Login({ onLogin, theme, toggle }) {
               </div>
             </div>
 
+            {notice && !err && (
+              <div className="badge warn" style={{ width: '100%', justifyContent: 'center', padding: '10px 14px', borderRadius: '10px', whiteSpace: 'normal', textAlign: 'center' }} role="status">
+                {notice}
+              </div>
+            )}
+
             {err && (
-              <div className="badge bad" style={{ width: '100%', justifyContent: 'center', padding: '10px 14px', borderRadius: '10px' }} role="alert">
+              <div className="badge bad" style={{ width: '100%', justifyContent: 'center', padding: '10px 14px', borderRadius: '10px', whiteSpace: 'normal', textAlign: 'center' }} role="alert">
                 {err}
               </div>
             )}
@@ -211,6 +269,22 @@ export default function App() {
   const [open, setOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [ready, setReady] = useState(!getToken());
+  const [notice, setNotice] = useState('');
+
+  const handleLogout = useCallback(async () => {
+    await logout();
+    setUser(null);
+    setNotice('');
+  }, []);
+
+  const handleAutoLogout = useCallback(async () => {
+    await logout();
+    setUser(null);
+    setNotice('Sesi Anda telah berakhir karena tidak ada aktivitas selama 10 menit.');
+  }, []);
+
+  // Monitor aktivitas pengguna: logout otomatis jika 10 menit tanpa aktivitas
+  useIdleTimer(user, handleAutoLogout);
 
   useEffect(() => {
     if (getToken()) {
@@ -219,7 +293,12 @@ export default function App() {
         .catch(() => setToken(null))
         .finally(() => setReady(true));
     }
-    const h = () => setUser(null);
+    const h = e => {
+      setUser(null);
+      if (e?.detail?.message) {
+        setNotice(e.detail.message);
+      }
+    };
     addEventListener('auth-expired', h);
     return () => removeEventListener('auth-expired', h);
   }, []);
@@ -227,7 +306,21 @@ export default function App() {
   useEffect(() => setOpen(false), [page]);
 
   if (!ready) return null;
-  if (!user) return <ToastHost><Login onLogin={setUser} theme={theme} toggle={toggle} /></ToastHost>;
+  if (!user) {
+    return (
+      <ToastHost>
+        <Login
+          onLogin={u => {
+            setNotice('');
+            setUser(u);
+          }}
+          theme={theme}
+          toggle={toggle}
+          notice={notice}
+        />
+      </ToastHost>
+    );
+  }
 
   const items = NAV.filter(n => !n.admin || user.role === 'admin');
   const cur = items.find(n => n.id === page.split('/')[0]) || items[0];
@@ -263,7 +356,7 @@ export default function App() {
             </div>
             <div className="brand-text">
               <span className="brand-title">Manajemen Paspor</span>
-              <span className="brand-sub">Kemenag RI</span>
+              <span className="brand-sub">KEMENHAJ MAGETAN</span>
             </div>
             <button
               type="button"
@@ -302,10 +395,7 @@ export default function App() {
             <ThemeBtn theme={theme} toggle={toggle} />
             <button
               className="icon danger"
-              onClick={() => {
-                setToken(null);
-                setUser(null);
-              }}
+              onClick={handleLogout}
               aria-label="Keluar"
               title="Keluar dari akun"
             >
