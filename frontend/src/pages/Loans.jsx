@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Camera, Download } from 'lucide-react';
+import { Camera, Download, FileText } from 'lucide-react';
 import { api, download } from '../api.js';
 import PassportPicker from '../components/PassportPicker.jsx';
 import PhotoInput from '../components/PhotoInput.jsx';
@@ -45,11 +45,11 @@ export default function Loans() {
 
   return (
     <>
-      <PageHead title="Peminjaman paspor" sub="Cari berdasarkan nama, nomor paspor, atau nomor porsi. Hanya paspor dengan status fisik “ada” yang bisa dipinjam.">
+      <PageHead title="Peminjaman paspor" sub={'Cari berdasarkan nama, nomor paspor, atau nomor porsi. Hanya paspor dengan status fisik "ada" yang bisa dipinjam.'}>
         <select aria-label="Filter status peminjaman" style={{ width: 'auto' }} value={status} onChange={e => setStatus(e.target.value)}>
           <option value="">Semua peminjaman</option><option value="open">Sedang dipinjam</option><option value="returned">Sudah dikembalikan</option></select>
         <button className="btn" onClick={() => exportData('xlsx')} title="Ekspor sesuai filter yang aktif"><Download size={18} /> Excel</button>
-        <button className="btn" onClick={() => exportData('csv')} title="Ekspor sesuai filter yang aktif">CSV</button>
+        <button className="btn" onClick={() => exportData('pdf')} title="Ekspor sesuai filter yang aktif"><FileText size={18} /> PDF</button>
       </PageHead>
       <form className="card form" onSubmit={lend}>
         <div className="field wide"><label>Paspor</label><PassportPicker value={picked} onChange={setPicked} /></div>

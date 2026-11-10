@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 
-export const VISABIO = ['sudah', 'belum', 'under review', 'ditolak'];
+export const VISABIO = ['sudah', 'belum', 'mengulang', 'under review', 'ditolak'];
 export const PRINT = ['belum', 'sudah'];
 export const FISIK = ['ada', 'dipinjam', 'diserahkan', 'hilang'];
-const TONE = { sudah: 'ok', ada: 'ok', belum: 'warn', 'under review': 'info', ditolak: 'bad', dipinjam: 'info', hilang: 'bad', diserahkan: 'neutral' };
+const TONE = { sudah: 'ok', ada: 'ok', belum: 'warn', mengulang: 'warn', 'under review': 'info', ditolak: 'bad', dipinjam: 'info', hilang: 'bad', diserahkan: 'neutral' };
 export const Badge = ({ v }) => <span className={`badge ${TONE[v] || 'neutral'}`}>{v}</span>;
 export const tgl = d => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '–');
 export const waktu = d => (d ? new Date(d).toLocaleString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '–');

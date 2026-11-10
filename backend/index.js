@@ -1,4 +1,4 @@
-import express from 'express'; import pg from 'pg'; import bcrypt from 'bcryptjs'; import jwt from 'jsonwebtoken'; import multer from 'multer'; import ExcelJS from 'exceljs';
+import express from 'express'; import pg from 'pg'; import bcrypt from 'bcryptjs'; import jwt from 'jsonwebtoken'; import multer from 'multer'; import ExcelJS from 'exceljs'; import PDFDocument from 'pdfkit';
 
 pg.types.setTypeParser(1082, v => v); // DATE tetap string 'YYYY-MM-DD' (tanpa geser zona waktu)
 const { DATABASE_URL, OCR_URL = 'http://ocr:8000', JWT_SECRET, ADMIN_USER = 'admin', ADMIN_PASS } = process.env;
@@ -34,9 +34,8 @@ await db.query(`ALTER TABLE passports ADD COLUMN IF NOT EXISTS phone TEXT, ADD C
 await db.query(`
 ALTER TABLE passports ADD COLUMN IF NOT EXISTS visabio_date DATE, ADD COLUMN IF NOT EXISTS bin_binti TEXT;
 ALTER TABLE passports DROP CONSTRAINT IF EXISTS passports_visabio_status_check, DROP CONSTRAINT IF EXISTS passports_passport_physical_check;
-UPDATE passports SET visabio_status='belum' WHERE visabio_status='mengulang';
 UPDATE passports SET passport_physical='hilang' WHERE passport_physical='tidak';
-ALTER TABLE passports ADD CONSTRAINT passports_visabio_status_check CHECK (visabio_status IN ('sudah','belum','under review','ditolak')),
+ALTER TABLE passports ADD CONSTRAINT passports_visabio_status_check CHECK (visabio_status IN ('sudah','belum','under review','ditolak','mengulang')),
   ADD CONSTRAINT passports_passport_physical_check CHECK (passport_physical IN ('ada','dipinjam','diserahkan','hilang'));`);
 await db.query(`
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS borrower_phone TEXT, ADD COLUMN IF NOT EXISTS borrower_address TEXT,
@@ -116,28 +115,87 @@ app.delete('/api/districts/:id', auth, wrap(async (req, res) => {
 // ---- paspor
 const F = ['name', 'bin_binti', 'passport_number', 'birth_date', 'kecamatan', 'visabio_status', 'visabio_date', 'visabio_printed', 'passport_physical', 'phone', 'porsi_number', 'notes'];
 const NULLABLE = ['bin_binti', 'birth_date', 'kecamatan', 'visabio_date', 'phone', 'porsi_number', 'notes'];const vals = b => F.map(k => { let v = typeof b[k] === 'string' ? b[k].trim() : b[k]; if (k === 'passport_number' && v) v = v.toUpperCase(); return v === '' && NULLABLE.includes(k) ? null : v === '' ? undefined : v; });
-const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', passport_physical = '', limit = '' }) =>
+const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', passport_physical = '', visabio_year = '', limit = '' }) =>
   (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR kecamatan=$2)
-    AND ($3='' OR visabio_status=$3) AND ($4='' OR passport_physical=$4) ORDER BY name LIMIT $5`,
-    [`%${q}%`, kecamatan, visabio_status, passport_physical, Math.min(Number(limit) || 0, 50) || null])).rows;
+    AND ($3='' OR visabio_status=$3) AND ($4='' OR passport_physical=$4)
+    AND ($5='' OR (visabio_date IS NOT NULL AND EXTRACT(YEAR FROM visabio_date)::text=$5))
+    ORDER BY name LIMIT $6`,
+    [`%${q}%`, kecamatan, visabio_status, passport_physical, visabio_year, Math.min(Number(limit) || 0, 50) || null])).rows;
 app.get('/api/passports', auth, wrap(async (req, res) => res.json(await queryPassports(req.query))));
 
-// ---- export (mengikuti filter yang sama dengan daftar)
+// ---- helper PDF
 const cap = s => (s ? s[0].toUpperCase() + s.slice(1) : '');
 const idDate = s => (s ? s.split('-').reverse().join('/') : '');
+
 const EXPORT_COLS = [ // [judul, field, lebar, jenis]
   ['Nama', 'name', 30], ['Bin/Binti', 'bin_binti', 22], ['Nomor Paspor', 'passport_number', 16], ['Tanggal Lahir', 'birth_date', 14, 'date'], ['Kecamatan', 'kecamatan', 20],
   ['Status Visabio', 'visabio_status', 16, 'enum'], ['Tanggal Visabio', 'visabio_date', 16, 'date'], ['Print Visabio', 'visabio_printed', 14, 'enum'],
-  ['Paspor Fisik', 'passport_physical', 14, 'enum'], ['Nomor HP', 'phone', 16], ['Nomor Porsi', 'porsi_number', 16], ['Catatan', 'notes', 40]];app.get('/api/passports/export', auth, wrap(async (req, res) => {
-const rows = await queryPassports(req.query), stamp = new Date().toISOString().slice(0, 10);
-  if (req.query.format === 'csv') {
-    const cell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s) && !/^\+?\d[\d ()-]*$/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; }; // cegah formula injection
-    const lines = [['No', ...EXPORT_COLS.map(c => c[0])].map(cell).join(',')];
-    rows.forEach((r, i) => lines.push([i + 1, ...EXPORT_COLS.map(([, k, , t]) => (t === 'date' ? idDate(r[k]) : t === 'enum' ? cap(r[k]) : r[k]))].map(cell).join(',')));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="data-paspor-${stamp}.csv"`);
-    return res.send('\uFEFF' + lines.join('\r\n')); // BOM agar Excel/LibreOffice membaca UTF-8
+  ['Paspor Fisik', 'passport_physical', 14, 'enum'], ['Nomor HP', 'phone', 16], ['Nomor Porsi', 'porsi_number', 16], ['Catatan', 'notes', 40]];
+
+// helper: buat PDF tabel paspor
+const buildPassportPdf = (rows, title) => new Promise(resolve => {
+  const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+  const chunks = []; doc.on('data', c => chunks.push(c)); doc.on('end', () => resolve(Buffer.concat(chunks)));
+  const W = doc.page.width - 60;
+  const cols = [
+    { w: 24, label: 'No' }, { w: 110, label: 'Nama' }, { w: 72, label: 'Nomor Paspor' },
+    { w: 65, label: 'Tgl Lahir' }, { w: 78, label: 'Kecamatan' }, { w: 68, label: 'Status Visabio' },
+    { w: 65, label: 'Tgl Visabio' }, { w: 48, label: 'Print' }, { w: 56, label: 'Paspor Fisik' },
+    { w: 72, label: 'No HP' }, { w: 72, label: 'No Porsi' }
+  ];
+  const rowH = 17;
+  let y = 30;
+
+  const drawHeader = () => {
+    doc.fontSize(13).font('Helvetica-Bold').text(title, 30, y);
+    y += 16;
+    doc.fontSize(7).font('Helvetica').fillColor('#666').text(`Dicetak: ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}  |  Total: ${rows.length} data`, 30, y);
+    y += 14;
+    // header baris
+    doc.rect(30, y, W, rowH).fill('#0C6B58');
+    let x = 30;
+    cols.forEach(c => {
+      doc.fillColor('white').font('Helvetica-Bold').fontSize(6.5).text(c.label, x + 2, y + 5, { width: c.w - 4, ellipsis: true });
+      x += c.w;
+    });
+    doc.fillColor('black'); y += rowH;
+  };
+
+  drawHeader();
+  rows.forEach((r, i) => {
+    if (y + rowH > doc.page.height - 30) {
+      doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 30;
+      doc.fontSize(7).font('Helvetica').fillColor('#666').text(title + ' (lanjutan)', 30, y); y += 14;
+      doc.rect(30, y, W, rowH).fill('#0C6B58');
+      let x = 30;
+      cols.forEach(c => { doc.fillColor('white').font('Helvetica-Bold').fontSize(6.5).text(c.label, x + 2, y + 5, { width: c.w - 4, ellipsis: true }); x += c.w; });
+      doc.fillColor('black'); y += rowH;
+    }
+    if (i % 2 === 0) doc.rect(30, y, W, rowH).fill('#EDF7F5');
+    doc.rect(30, y, W, rowH).stroke('#C5DDD9');
+    const vals2 = [i + 1, r.name, r.passport_number, idDate(r.birth_date), r.kecamatan || '–',
+      cap(r.visabio_status), idDate(r.visabio_date), cap(r.visabio_printed), cap(r.passport_physical),
+      r.phone || '–', r.porsi_number || '–'];
+    let x = 30;
+    cols.forEach((c, ci) => {
+      doc.fillColor('#111').font('Helvetica').fontSize(6.5).text(String(vals2[ci] ?? ''), x + 2, y + 5, { width: c.w - 4, ellipsis: true });
+      x += c.w;
+    });
+    y += rowH;
+  });
+  doc.end();
+});
+
+// ---- export passports (xlsx & pdf)
+app.get('/api/passports/export', auth, wrap(async (req, res) => {
+  const rows = await queryPassports(req.query), stamp = new Date().toISOString().slice(0, 10);
+  if (req.query.format === 'pdf') {
+    const buf = await buildPassportPdf(rows, 'Data Paspor Jemaah Haji');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="data-paspor-${stamp}.pdf"`);
+    return res.send(buf);
   }
+  // xlsx (default)
   const wb = new ExcelJS.Workbook(), ws = wb.addWorksheet('Data Paspor', { views: [{ state: 'frozen', ySplit: 1 }] });
   ws.columns = [{ header: 'No', key: 'no', width: 6 }, ...EXPORT_COLS.map(([header, key, width, t]) => ({ header, key, width, style: t === 'date' ? { numFmt: 'dd/mm/yyyy' } : {} }))];
   rows.forEach((r, i) => ws.addRow({ no: i + 1, ...Object.fromEntries(EXPORT_COLS.map(([, k, , t]) =>
@@ -149,6 +207,7 @@ const rows = await queryPassports(req.query), stamp = new Date().toISOString().s
   res.setHeader('Content-Disposition', `attachment; filename="data-paspor-${stamp}.xlsx"`);
   await wb.xlsx.write(res); res.end();
 }));
+
 app.post('/api/passports', auth, wrap(async (req, res) => {
   const r = await db.query(`INSERT INTO passports(${F}) VALUES(${F.map((_, i) => '$' + (i + 1))}) RETURNING *`, vals(req.body));
   res.status(201).json(r.rows[0]);
@@ -213,27 +272,130 @@ app.put('/api/loans/:id/photo', auth, upload.single('photo'), wrap(async (req, r
 }));
 app.delete('/api/loans/:id/photo', auth, wrap(async (req, res) => { await db.query('DELETE FROM loan_photos WHERE loan_id=$1', [req.params.id]); res.sendStatus(204); }));
 
-// ---- export peminjaman (mengikuti filter status yang sama dengan daftar)
+// ---- export peminjaman (xlsx & pdf, termasuk foto)
 const LOAN_COLS = [ // [judul, field, lebar, jenis]; field diawali _ = dihitung
   ['Nama Jemaah', 'name', 28], ['Nomor Paspor', 'passport_number', 16], ['Peminjam', 'borrower', 24], ['No. Telepon', 'borrower_phone', 16], ['Alamat', 'borrower_address', 36],
   ['Tanggal Peminjaman', 'loan_date', 18, 'date'], ['Rencana Dikembalikan', 'due_date', 20, 'date'], ['Tanggal Dikembalikan', 'returned_date', 20, 'date'],
-  ['Status', '_status', 22], ['Catatan', 'note', 36], ['Foto', '_photo', 8]];
+  ['Status', '_status', 22], ['Catatan', 'note', 36]];
+
+// query loans sekaligus dengan foto
+const queryLoansWithPhoto = async ({ status = '' }) => (await db.query(`
+  SELECT l.*, p.name, p.passport_number, (l.returned_at AT TIME ZONE 'Asia/Jakarta')::date AS returned_date,
+         ph.data AS photo_data, ph.mime AS photo_mime
+  FROM loans l JOIN passports p ON p.id = l.passport_id
+  LEFT JOIN loan_photos ph ON ph.loan_id = l.id
+  WHERE ($1 = '' OR ($1 = 'open' AND l.returned_at IS NULL) OR ($1 = 'returned' AND l.returned_at IS NOT NULL))
+  ORDER BY (l.returned_at IS NULL) DESC, l.loan_date DESC NULLS LAST, l.id DESC`, [status])).rows;
+
+// helper: buat PDF tabel peminjaman (dengan foto)
+const buildLoanPdf = (rows, title, today) => new Promise(resolve => {
+  const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+  const chunks = []; doc.on('data', c => chunks.push(c)); doc.on('end', () => resolve(Buffer.concat(chunks)));
+  const W = doc.page.width - 60;
+  // kolom: No, Nama Jemaah, No Paspor, Peminjam, No Telp, Tgl Pinjam, Rencana Kembali, Tgl Dikembalikan, Status, Catatan, Foto
+  const cols = [
+    { w: 22, label: 'No' }, { w: 95, label: 'Nama Jemaah' }, { w: 68, label: 'No Paspor' },
+    { w: 90, label: 'Peminjam' }, { w: 70, label: 'No Telepon' },
+    { w: 60, label: 'Tgl Pinjam' }, { w: 65, label: 'Rencana Kembali' }, { w: 65, label: 'Tgl Kembali' },
+    { w: 72, label: 'Status' }, { w: 90, label: 'Catatan' }, { w: 55, label: 'Foto TTD' }
+  ];
+  const rowH = 55; // tinggi baris lebih besar untuk foto
+  let y = 30;
+
+  const drawHeader = (isPage2 = false) => {
+    if (!isPage2) {
+      doc.fontSize(13).font('Helvetica-Bold').fillColor('#111').text(title, 30, y); y += 16;
+      doc.fontSize(7).font('Helvetica').fillColor('#666').text(`Dicetak: ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}  |  Total: ${rows.length} data`, 30, y); y += 14;
+    } else {
+      doc.fontSize(7).font('Helvetica').fillColor('#666').text(title + ' (lanjutan)', 30, y); y += 14;
+    }
+    doc.rect(30, y, W, 16).fill('#0C6B58');
+    let x = 30;
+    cols.forEach(c => {
+      doc.fillColor('white').font('Helvetica-Bold').fontSize(6).text(c.label, x + 2, y + 5, { width: c.w - 4, ellipsis: true });
+      x += c.w;
+    });
+    doc.fillColor('black'); y += 16;
+  };
+
+  drawHeader(false);
+  rows.forEach((r, i) => {
+    if (y + rowH > doc.page.height - 30) {
+      doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 30;
+      drawHeader(true);
+    }
+    if (i % 2 === 0) doc.rect(30, y, W, rowH).fill('#EDF7F5');
+    doc.rect(30, y, W, rowH).stroke('#C5DDD9');
+
+    const status = r.returned_at ? 'Dikembalikan' : (r.due_date && r.due_date < today ? 'Dipinjam (terlambat)' : 'Dipinjam');
+    const textVals = [i + 1, r.name, r.passport_number, r.borrower, r.borrower_phone || '–',
+      idDate(r.loan_date), idDate(r.due_date), idDate(r.returned_date), status, r.note || '–'];
+    let x = 30;
+    cols.forEach((c, ci) => {
+      if (ci < cols.length - 1) {
+        // text cell
+        doc.fillColor('#111').font('Helvetica').fontSize(6.5).text(String(textVals[ci] ?? ''), x + 2, y + 4, { width: c.w - 4, height: rowH - 8, ellipsis: true });
+      } else {
+        // foto cell
+        if (r.photo_data) {
+          try {
+            const imgBuf = Buffer.isBuffer(r.photo_data) ? r.photo_data : Buffer.from(r.photo_data);
+            const imgW = c.w - 6, imgH = rowH - 6;
+            doc.image(imgBuf, x + 3, y + 3, { fit: [imgW, imgH], align: 'center', valign: 'center' });
+          } catch { doc.fillColor('#888').font('Helvetica').fontSize(6).text('Gagal muat', x + 2, y + 4); }
+        } else {
+          doc.fillColor('#AAA').font('Helvetica').fontSize(6).text('Tidak ada', x + 2, y + 4);
+        }
+      }
+      x += c.w;
+    });
+    y += rowH;
+  });
+  doc.end();
+});
+
 app.get('/api/loans/export', auth, wrap(async (req, res) => {
-  const rows = await queryLoans(req.query), stamp = new Date().toISOString().slice(0, 10), today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10); // WIB
+  const stamp = new Date().toISOString().slice(0, 10), today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10); // WIB
   const val = (r, k) => (k === '_status' ? (r.returned_at ? 'Dikembalikan' : r.due_date && r.due_date < today ? 'Dipinjam (terlambat)' : 'Dipinjam')
-    : k === '_photo' ? (r.has_photo ? 'Ada' : 'Tidak') : r[k]);
-  if (req.query.format === 'csv') {
-    const cell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s) && !/^\+?\d[\d ()-]*$/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-    const lines = [['No', ...LOAN_COLS.map(c => c[0])].map(cell).join(',')];
-    rows.forEach((r, i) => lines.push([i + 1, ...LOAN_COLS.map(([, k, , t]) => (t === 'date' ? idDate(val(r, k)) : val(r, k)))].map(cell).join(',')));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="data-peminjaman-${stamp}.csv"`);
-    return res.send('\uFEFF' + lines.join('\r\n'));
+    : r[k]);
+  if (req.query.format === 'pdf') {
+    const rows = await queryLoansWithPhoto(req.query);
+    const buf = await buildLoanPdf(rows, 'Data Peminjaman Paspor', today);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="data-peminjaman-${stamp}.pdf"`);
+    return res.send(buf);
   }
+  // xlsx dengan foto
+  const rows = await queryLoansWithPhoto(req.query);
   const wb = new ExcelJS.Workbook(), ws = wb.addWorksheet('Peminjaman', { views: [{ state: 'frozen', ySplit: 1 }] });
-  ws.columns = [{ header: 'No', key: 'no', width: 6 }, ...LOAN_COLS.map(([header, key, width, t]) => ({ header, key, width, style: t === 'date' ? { numFmt: 'dd/mm/yyyy' } : {} }))];
-  rows.forEach((r, i) => ws.addRow({ no: i + 1, ...Object.fromEntries(LOAN_COLS.map(([, k, , t]) =>
-    [k, t === 'date' ? (val(r, k) ? new Date(val(r, k) + 'T00:00:00Z') : null) : val(r, k) ?? null])) }));
+  ws.columns = [
+    { header: 'No', key: 'no', width: 6 },
+    ...LOAN_COLS.map(([header, key, width, t]) => ({ header, key, width, style: t === 'date' ? { numFmt: 'dd/mm/yyyy' } : {} })),
+    { header: 'Foto TTD', key: '_photo_cell', width: 22 }
+  ];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowData = { no: i + 1, ...Object.fromEntries(LOAN_COLS.map(([, k, , t]) =>
+      [k, t === 'date' ? (val(r, k) ? new Date(val(r, k) + 'T00:00:00Z') : null) : val(r, k) ?? null])), _photo_cell: null };
+    const exRow = ws.addRow(rowData);
+    exRow.height = 60;
+    // sisipkan foto sebagai image di sel kolom terakhir jika ada
+    if (r.photo_data) {
+      try {
+        const imgBuf = Buffer.isBuffer(r.photo_data) ? r.photo_data : Buffer.from(r.photo_data);
+        const mime = r.photo_mime || 'image/jpeg';
+        const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'png' : 'jpeg';
+        const finalBuf = ext === 'jpeg' ? imgBuf : imgBuf; // webp: exceljs tidak support, tetap coba
+        const imgId = wb.addImage({ buffer: finalBuf, extension: ext });
+        const colIdx = ws.columns.length - 1; // kolom Foto (0-based)
+        ws.addImage(imgId, {
+          tl: { col: colIdx, row: i + 1 },
+          br: { col: colIdx + 1, row: i + 2 },
+          editAs: 'oneCell'
+        });
+      } catch { /* foto gagal disisipkan, skip */ }
+    }
+  }
   const head = ws.getRow(1); head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   head.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0C6B58' } }; });
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columns.length } };
@@ -241,6 +403,7 @@ app.get('/api/loans/export', auth, wrap(async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="data-peminjaman-${stamp}.xlsx"`);
   await wb.xlsx.write(res); res.end();
 }));
+
 app.get('/api/stats', auth, wrap(async (_q, res) => {
   const g = async col => Object.fromEntries((await db.query(`SELECT ${col} k, count(*)::int n FROM passports GROUP BY 1`)).rows.map(r => [r.k, r.n]));
   const [visabio, print, fisik] = await Promise.all([g('visabio_status'), g('visabio_printed'), g('passport_physical')]);

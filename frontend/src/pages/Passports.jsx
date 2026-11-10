@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, Download, Pencil, Plus, Search, Trash2, Upload, ScanLine } from 'lucide-react';
+import { Camera, Download, FileText, Pencil, Plus, Search, Trash2, Upload, ScanLine } from 'lucide-react';
 import { api, download } from '../api.js';
 import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Seg, tgl, useToast, VISABIO } from '../ui.jsx';
 
@@ -109,9 +109,23 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
   );
 }
 
+// Ambil daftar tahun unik dari data paspor untuk filter visabio_year
+function useVisabioYears() {
+  const [years, setYears] = useState([]);
+  useEffect(() => {
+    const thisYear = new Date().getFullYear();
+    // Buat list tahun dari 5 tahun lalu sampai 5 tahun depan (inklusif tahun ini)
+    const y = [];
+    for (let yr = thisYear - 5; yr <= thisYear + 5; yr++) y.push(String(yr));
+    setYears(y);
+  }, []);
+  return years;
+}
+
 export default function Passports({ openNew }) {
   const notify = useToast(); const [rows, setRows] = useState(null); const [districts, setDistricts] = useState([]);
-  const [f, setF] = useState({ q: '', kecamatan: '', visabio_status: '', passport_physical: '' }); const [form, setForm] = useState(openNew ? empty : null);
+  const [f, setF] = useState({ q: '', kecamatan: '', visabio_status: '', passport_physical: '', visabio_year: '' }); const [form, setForm] = useState(openNew ? empty : null);
+  const visabioYears = useVisabioYears();
   const loadD = () => api('/districts').then(setDistricts);
   const load = useCallback(() => api('/passports?' + new URLSearchParams(f)).then(setRows).catch(e => notify(e.message, 'bad')), [f]);
   useEffect(() => { loadD().catch(() => {}); }, []);
@@ -130,12 +144,18 @@ export default function Passports({ openNew }) {
     <>
       <PageHead title="Data paspor" sub={rows ? `${rows.length} data` : ''}>
         <button className="btn" onClick={() => exportData('xlsx')} title="Ekspor sesuai filter yang aktif"><Download size={18} /> Excel</button>
-        <button className="btn" onClick={() => exportData('csv')} title="Ekspor sesuai filter yang aktif">CSV</button>
+        <button className="btn" onClick={() => exportData('pdf')} title="Ekspor sesuai filter yang aktif"><FileText size={18} /> PDF</button>
         <button className="btn primary" onClick={() => setForm(empty)}><Plus size={18} /> Tambah paspor</button>
       </PageHead>
       <div className="filters">
         <div className="search"><Search size={18} /><input placeholder="Cari nama, nomor paspor, HP, atau porsi" value={f.q} onChange={e => setF({ ...f, q: e.target.value })} /></div>
-        {sel('kecamatan', 'Semua kecamatan', districts.map(d => d.name))}{sel('visabio_status', 'Semua status visabio', VISABIO)}{sel('passport_physical', 'Semua paspor fisik', FISIK)}
+        {sel('kecamatan', 'Semua kecamatan', districts.map(d => d.name))}
+        {sel('visabio_status', 'Semua status visabio', VISABIO)}
+        {sel('passport_physical', 'Semua paspor fisik', FISIK)}
+        <select aria-label="Filter tahun visabio" value={f.visabio_year} onChange={e => setF({ ...f, visabio_year: e.target.value })}>
+          <option value="">Semua tahun visabio</option>
+          {visabioYears.map(y => <option key={y}>{y}</option>)}
+        </select>
       </div>
       <div className="card flush"><table className="tbl">
         <thead><tr><th>Jemaah</th><th>Tgl lahir</th><th>Kecamatan</th><th>Visabio</th><th>Tgl Visabio</th><th>Print</th><th>Paspor fisik</th><th /></tr></thead>
