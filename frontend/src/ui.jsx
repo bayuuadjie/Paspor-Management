@@ -5,6 +5,8 @@ export const VISABIO = ['sudah', 'belum', 'mengulang', 'under review', 'ditolak'
 export const PRINT = ['belum', 'sudah'];
 export const FISIK = ['ada', 'dipinjam', 'diserahkan', 'hilang'];
 
+export const upper = v => (typeof v === 'string' ? v.toUpperCase() : v);
+
 const TONE = {
   sudah: 'ok',
   ada: 'ok',

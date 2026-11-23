@@ -174,13 +174,20 @@ app.delete('/api/districts/:id', auth, wrap(async (req, res) => {
 
 // ---- paspor
 const F = ['name', 'bin_binti', 'passport_number', 'birth_date', 'kecamatan', 'visabio_status', 'visabio_date', 'visabio_printed', 'passport_physical', 'phone', 'porsi_number', 'notes'];
-const NULLABLE = ['bin_binti', 'birth_date', 'kecamatan', 'visabio_date', 'phone', 'porsi_number', 'notes'];const vals = b => F.map(k => { let v = typeof b[k] === 'string' ? b[k].trim() : b[k]; if (k === 'passport_number' && v) v = v.toUpperCase(); return v === '' && NULLABLE.includes(k) ? null : v === '' ? undefined : v; });
-const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', passport_physical = '', visabio_year = '', limit = '' }) =>
+const NULLABLE = ['bin_binti', 'birth_date', 'kecamatan', 'visabio_date', 'phone', 'porsi_number', 'notes'];
+// Field teks paspor yang selalu disimpan dalam huruf kapital.
+const UPPER_F = new Set(['name', 'bin_binti', 'passport_number', 'phone', 'porsi_number', 'notes']);
+const vals = b => F.map(k => {
+  let v = typeof b[k] === 'string' ? b[k].trim() : b[k];
+  if (UPPER_F.has(k) && v) v = v.toUpperCase();
+  return v === '' && NULLABLE.includes(k) ? null : v === '' ? undefined : v;
+});
+const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', visabio_printed = '', passport_physical = '', visabio_year = '', limit = '' }) =>
   (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR kecamatan=$2)
-    AND ($3='' OR visabio_status=$3) AND ($4='' OR passport_physical=$4)
-    AND ($5='' OR (visabio_date IS NOT NULL AND EXTRACT(YEAR FROM visabio_date)::text=$5))
-    ORDER BY name LIMIT $6`,
-    [`%${q}%`, kecamatan, visabio_status, passport_physical, visabio_year, Math.min(Number(limit) || 0, 50) || null])).rows;
+    AND ($3='' OR visabio_status=$3) AND ($4='' OR visabio_printed=$4) AND ($5='' OR passport_physical=$5)
+    AND ($6='' OR (visabio_date IS NOT NULL AND EXTRACT(YEAR FROM visabio_date)::text=$6))
+    ORDER BY name LIMIT $7`,
+    [`%${q}%`, kecamatan, visabio_status, visabio_printed, passport_physical, visabio_year, Math.min(Number(limit) || 0, 50) || null])).rows;
 app.get('/api/passports', auth, wrap(async (req, res) => res.json(await queryPassports(req.query))));
 
 // ---- helper PDF

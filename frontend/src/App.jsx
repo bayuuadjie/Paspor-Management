@@ -385,18 +385,20 @@ export default function App() {
                 </a>
               );
             })}
-            <button
-              type="button"
-              className="nav-logout-btn"
-              onClick={() => {
-                setOpen(false);
-                handleLogout();
-              }}
-            >
-              <LogOut size={19} />
-              <span>Keluar</span>
-            </button>
           </nav>
+
+          {/* Mobile: tombol keluar full-width di bagian bawah sidebar */}
+          <button
+            type="button"
+            className="nav-logout-btn"
+            onClick={() => {
+              setOpen(false);
+              handleLogout();
+            }}
+          >
+            <LogOut size={19} />
+            <span>Keluar</span>
+          </button>
 
           <div className="side-f">
             <div className="avatar-chip">{initial}</div>

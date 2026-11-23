@@ -16,7 +16,12 @@ import {
   X
 } from 'lucide-react';
 import { api, download } from '../api.js';
-import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Seg, tgl, useToast, VISABIO } from '../ui.jsx';
+import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Seg, tgl, upper, useToast, VISABIO } from '../ui.jsx';
+
+// Field teks bebas yang otomatis disimpan dalam huruf kapital.
+// Enum status, kecamatan, dan tanggal sengaja dikecualikan.
+const UPPER_FIELDS = new Set(['name', 'bin_binti', 'passport_number', 'phone', 'porsi_number', 'notes']);
+const upperField = (k, v) => (UPPER_FIELDS.has(k) ? upper(v) : v);
 
 const empty = {
   name: '',
@@ -89,7 +94,9 @@ function CameraModal({ onShot, onClose }) {
 
 function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }) {
   const notify = useToast();
-  const [f, setF] = useState(() => Object.fromEntries(Object.entries(initial).map(([k, v]) => [k, v ?? ''])));
+  const [f, setF] = useState(() =>
+    Object.fromEntries(Object.entries(initial).map(([k, v]) => [k, upperField(k, v ?? '')]))
+  );
   const [cam, setCam] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -100,7 +107,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
   const upRef = useRef(), capRef = useRef();
 
   const set = (k, v) => {
-    setF(p => ({ ...p, [k]: v }));
+    setF(p => ({ ...p, [k]: upperField(k, v) }));
     setLow(l => l.filter(x => x !== k));
   };
 
@@ -116,8 +123,8 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
       setOcrImg(r.mrz_preview || '');
       setF(p => ({
         ...p,
-        name: r.name || p.name,
-        passport_number: r.passport_number || p.passport_number,
+        name: r.name ? upper(r.name) : p.name,
+        passport_number: r.passport_number ? upper(r.passport_number) : p.passport_number,
         birth_date: r.birth_date || p.birth_date
       }));
       const label = { name: 'nama', passport_number: 'nomor paspor', birth_date: 'tanggal lahir' };
@@ -331,6 +338,7 @@ export default function Passports({ openNew }) {
     q: '',
     kecamatan: '',
     visabio_status: '',
+    visabio_printed: '',
     passport_physical: '',
     visabio_year: ''
   });
@@ -378,6 +386,7 @@ export default function Passports({ openNew }) {
       ...f,
       kecamatan: '',
       visabio_status: '',
+      visabio_printed: '',
       passport_physical: '',
       visabio_year: ''
     });
@@ -387,6 +396,7 @@ export default function Passports({ openNew }) {
   const activeFilters = [
     f.kecamatan ? { key: 'kecamatan', label: 'Kecamatan', val: f.kecamatan } : null,
     f.visabio_status ? { key: 'visabio_status', label: 'Visabio', val: f.visabio_status } : null,
+    f.visabio_printed ? { key: 'visabio_printed', label: 'Print', val: f.visabio_printed === 'belum' ? 'Belum print' : 'Sudah print' } : null,
     f.passport_physical ? { key: 'passport_physical', label: 'Fisik', val: f.passport_physical } : null,
     f.visabio_year ? { key: 'visabio_year', label: 'Tahun', val: f.visabio_year } : null
   ].filter(Boolean);
@@ -520,6 +530,20 @@ export default function Passports({ openNew }) {
                   <option value="">Semua Status Visabio</option>
                   {VISABIO.map(o => (
                     <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <span className="filter-group-label">Print Visabio</span>
+                <select
+                  value={f.visabio_printed}
+                  onChange={e => setF({ ...f, visabio_printed: e.target.value })}
+                  aria-label="Filter print visabio"
+                >
+                  <option value="">Semua Status Print</option>
+                  {PRINT.map(o => (
+                    <option key={o} value={o}>{o === 'belum' ? 'Belum print' : 'Sudah print'}</option>
                   ))}
                 </select>
               </div>

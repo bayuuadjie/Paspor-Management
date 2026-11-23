@@ -1699,6 +1699,13 @@ label, .field > label {
   }
   .nav-logout-btn {
     display: flex;
+    margin-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 14px;
+  }
+  /* Tombol keluar full-width menggantikan ikon di footer pada mobile */
+  .side-f .icon.danger {
+    display: none;
   }
   .content {
     padding: 18px 14px 56px;
