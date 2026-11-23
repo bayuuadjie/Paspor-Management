@@ -545,6 +545,31 @@ label, .field > label {
   background: var(--grad-blue);
 }
 
+.nav-logout-btn {
+  display: none;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--r);
+  color: var(--bad);
+  background: transparent;
+  border: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+  width: 100%;
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 14px;
+}
+
+.nav-logout-btn:hover {
+  background: var(--bad-bg);
+  transform: translateX(2px);
+}
+
 .side-f {
   display: flex;
   align-items: center;

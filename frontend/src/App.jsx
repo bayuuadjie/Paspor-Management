@@ -272,6 +272,7 @@ export default function App() {
   const [notice, setNotice] = useState('');
 
   const handleLogout = useCallback(async () => {
+    if (!confirm('Apakah Anda yakin ingin keluar dari sistem?')) return;
     await logout();
     setUser(null);
     setNotice('');
@@ -384,6 +385,17 @@ export default function App() {
                 </a>
               );
             })}
+            <button
+              type="button"
+              className="nav-logout-btn"
+              onClick={() => {
+                setOpen(false);
+                handleLogout();
+              }}
+            >
+              <LogOut size={19} />
+              <span>Keluar</span>
+            </button>
           </nav>
 
           <div className="side-f">
@@ -411,13 +423,23 @@ export default function App() {
             <button className="icon" onClick={() => setOpen(true)} aria-label="Buka menu">
               <Menu size={20} />
             </button>
-            <div className="row" style={{ gap: '8px', minWidth: 0 }}>
+            <div className="row" style={{ gap: '8px', minWidth: 0, flex: 1 }}>
               <span className="brand-logo-wrap" style={{ width: '28px', height: '28px', borderRadius: '8px', flexShrink: 0 }}>
                 <img src="/assets/logo.png" alt="Logo" className="brand-img" />
               </span>
               <b style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cur.label}</b>
             </div>
-            <ThemeBtn theme={theme} toggle={toggle} />
+            <div className="row" style={{ gap: '6px', flexShrink: 0 }}>
+              <ThemeBtn theme={theme} toggle={toggle} />
+              <button
+                className="icon danger"
+                onClick={handleLogout}
+                aria-label="Keluar"
+                title="Keluar dari akun"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
           </header>
           <main className="content">{pages[cur.id]}</main>
         </div>

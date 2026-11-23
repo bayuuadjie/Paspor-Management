@@ -84,7 +84,7 @@ export default function Users({ me }) {
             <input
               value={f.full_name}
               onChange={e => setF({ ...f, full_name: e.target.value })}
-              placeholder="Contoh: Ahmad Syarifuddin"
+              placeholder="Nama Lengkap"
               required
             />
           </label>
@@ -93,7 +93,7 @@ export default function Users({ me }) {
             <input
               value={f.username}
               onChange={e => setF({ ...f, username: e.target.value.toLowerCase().trim() })}
-              placeholder="Contoh: ahmad"
+              placeholder="Username"
               autoComplete="off"
               required
             />
