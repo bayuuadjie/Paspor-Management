@@ -405,6 +405,14 @@ export default function App() {
               <small className="muted">{user.role === 'admin' ? 'Administrator' : 'Staf Operasional'}</small>
             </div>
             <ThemeBtn theme={theme} toggle={toggle} />
+            <button
+              className="icon danger"
+              onClick={handleLogout}
+              aria-label="Keluar"
+              title="Keluar dari akun"
+            >
+              <LogOut size={18} />
+            </button>
           </div>
         </aside>
 
