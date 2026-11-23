@@ -405,14 +405,6 @@ export default function App() {
               <small className="muted">{user.role === 'admin' ? 'Administrator' : 'Staf Operasional'}</small>
             </div>
             <ThemeBtn theme={theme} toggle={toggle} />
-            <button
-              className="icon danger"
-              onClick={handleLogout}
-              aria-label="Keluar"
-              title="Keluar dari akun"
-            >
-              <LogOut size={18} />
-            </button>
           </div>
         </aside>
 
@@ -431,14 +423,6 @@ export default function App() {
             </div>
             <div className="row" style={{ gap: '6px', flexShrink: 0 }}>
               <ThemeBtn theme={theme} toggle={toggle} />
-              <button
-                className="icon danger"
-                onClick={handleLogout}
-                aria-label="Keluar"
-                title="Keluar dari akun"
-              >
-                <LogOut size={18} />
-              </button>
             </div>
           </header>
           <main className="content">{pages[cur.id]}</main>

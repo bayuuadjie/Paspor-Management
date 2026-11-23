@@ -48,18 +48,8 @@ export default function Districts() {
     <>
       <PageHead
         title="Daftar Kecamatan"
-        sub={
-          rows
-            ? `Total ${totalKecamatan} kecamatan terdaftar • Master data untuk pengelompokan wilayah jemaah.`
-            : 'Master data kecamatan untuk pengelompokan wilayah jemaah pada data paspor.'
-        }
+        sub='Master data kecamatan untuk pengelompokan wilayah jemaah pada data paspor.' 
       >
-        {rows && (
-          <div className="badge neutral" style={{ padding: '6px 14px', fontSize: '0.88rem', gap: '8px' }}>
-            <MapPin size={15} color="var(--primary)" />
-            <span>Total: <b>{totalKecamatan}</b> Kecamatan</span>
-          </div>
-        )}
       </PageHead>
 
       <div className="dash-stat-grid">
@@ -107,12 +97,6 @@ export default function Districts() {
       </form>
 
       <div className="card flush">
-        <div className="row" style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', justifyContent: 'space-between' }}>
-          <b style={{ fontSize: '0.92rem' }}>Daftar Kecamatan</b>
-          <span className="badge neutral">
-            <b>{totalKecamatan}</b> kecamatan
-          </span>
-        </div>
         <table className="tbl">
           <thead>
             <tr>
@@ -148,19 +132,6 @@ export default function Districts() {
               </tr>
             ))}
           </tbody>
-          {rows && rows.length > 0 && (
-            <tfoot>
-              <tr style={{ background: 'var(--surface-2)', fontWeight: 600 }}>
-                <td>Total: {totalKecamatan} Kecamatan</td>
-                <td>
-                  <span className="badge neutral">
-                    <b>{totalPaspor}</b> paspor
-                  </span>
-                </td>
-                <td />
-              </tr>
-            </tfoot>
-          )}
         </table>
         {rows && !rows.length && (
           <Empty>Belum ada kecamatan. Tambahkan kecamatan pertama menggunakan formulir di atas.</Empty>
