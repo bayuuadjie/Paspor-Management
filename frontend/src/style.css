@@ -1,10 +1,3 @@
-/* ==========================================================================
-   Design System & Modern Theme: Manajemen Paspor
-   - White with Layered Elevation Levels (Level 0, 1, 2, 3)
-   - Blue Gradient Action Buttons & Accents
-   - Polished Night / Dark Mode
-   ========================================================================== */
-
 :root {
   /* Level 0: App Canvas */
   --bg: #f8fafc;
@@ -1703,6 +1696,9 @@ label, .field > label {
     border-bottom: 1px solid var(--border);
     box-shadow: var(--shadow-sm);
     gap: 10px;
+  }
+  .nav-logout-btn {
+    display: flex;
   }
   .content {
     padding: 18px 14px 56px;
