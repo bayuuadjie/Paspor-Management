@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BookOpen, MapPin, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
-import { Empty, PageHead, useToast } from '../ui.jsx';
+import { Empty, PageHead, Req, useToast } from '../ui.jsx';
 
 export default function Districts() {
   const notify = useToast();
@@ -81,15 +81,18 @@ export default function Districts() {
       </div>
 
       <form className="card row" onSubmit={add}>
-        <div className="search-wrap grow">
-          <MapPin size={18} className="search-icon-left" />
-          <input
-            placeholder="Ketik nama kecamatan baru"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            required
-          />
-        </div>
+        <label className="grow">
+          <span>Nama Kecamatan <Req /></span>
+          <div className="search-wrap">
+            <MapPin size={18} className="search-icon-left" />
+            <input
+              placeholder="Ketik nama kecamatan baru"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              required
+            />
+          </div>
+        </label>
         <button className="btn primary">
           <Plus size={17} />
           <span>Tambah Kecamatan</span>

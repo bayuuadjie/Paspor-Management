@@ -43,6 +43,13 @@ ALTER TABLE passports DROP CONSTRAINT IF EXISTS passports_visabio_status_check, 
 UPDATE passports SET passport_physical='hilang' WHERE passport_physical='tidak';
 ALTER TABLE passports ADD CONSTRAINT passports_visabio_status_check CHECK (visabio_status IN ('sudah','belum','under review','ditolak','mengulang')),
   ADD CONSTRAINT passports_passport_physical_check CHECK (passport_physical IN ('ada','dipinjam','diserahkan','hilang'));`);
+// Kecamatan wajib: terapkan NOT NULL hanya bila data lama tidak ada yang kosong.
+await db.query(`DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM passports WHERE kecamatan IS NULL OR btrim(kecamatan) = '') THEN
+    ALTER TABLE passports ALTER COLUMN kecamatan SET NOT NULL;
+  END IF;
+END $$`);
 await db.query(`
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS borrower_phone TEXT, ADD COLUMN IF NOT EXISTS borrower_address TEXT,
   ADD COLUMN IF NOT EXISTS loan_date DATE, ADD COLUMN IF NOT EXISTS due_date DATE;
@@ -174,7 +181,7 @@ app.delete('/api/districts/:id', auth, wrap(async (req, res) => {
 
 // ---- paspor
 const F = ['name', 'bin_binti', 'passport_number', 'birth_date', 'kecamatan', 'visabio_status', 'visabio_date', 'visabio_printed', 'passport_physical', 'phone', 'porsi_number', 'notes'];
-const NULLABLE = ['bin_binti', 'birth_date', 'kecamatan', 'visabio_date', 'phone', 'porsi_number', 'notes'];
+const NULLABLE = ['bin_binti', 'birth_date', 'visabio_date', 'phone', 'porsi_number', 'notes'];
 // Field teks paspor yang selalu disimpan dalam huruf kapital.
 const UPPER_F = new Set(['name', 'bin_binti', 'passport_number', 'phone', 'porsi_number', 'notes']);
 const vals = b => F.map(k => {
@@ -182,12 +189,24 @@ const vals = b => F.map(k => {
   if (UPPER_F.has(k) && v) v = v.toUpperCase();
   return v === '' && NULLABLE.includes(k) ? null : v === '' ? undefined : v;
 });
-const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', visabio_printed = '', passport_physical = '', visabio_year = '', limit = '' }) =>
-  (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR kecamatan=$2)
+const requiredPassport = b => {
+  for (const [k, label] of [['name', 'Nama lengkap'], ['passport_number', 'Nomor paspor'], ['kecamatan', 'Kecamatan']]) {
+    if (!String(b[k] ?? '').trim()) return `${label} wajib diisi`;
+  }
+  return null;
+};
+
+// Daftar kolom pengurutan yang diizinkan (nilai dari klien tidak pernah disisipkan langsung ke SQL).
+const SORT_COLS = { name: 'name', visabio_date: 'visabio_date', birth_date: 'birth_date', created_at: 'created_at', updated_at: 'updated_at' };
+const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', visabio_printed = '', passport_physical = '', visabio_year = '', sort = 'name', dir = 'asc', limit = '' }) => {
+  const col = SORT_COLS[sort] || SORT_COLS.name;
+  const order = String(dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+  return (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR kecamatan=$2)
     AND ($3='' OR visabio_status=$3) AND ($4='' OR visabio_printed=$4) AND ($5='' OR passport_physical=$5)
     AND ($6='' OR (visabio_date IS NOT NULL AND EXTRACT(YEAR FROM visabio_date)::text=$6))
-    ORDER BY name LIMIT $7`,
+    ORDER BY ${col} ${order} NULLS LAST, name ASC LIMIT $7`,
     [`%${q}%`, kecamatan, visabio_status, visabio_printed, passport_physical, visabio_year, Math.min(Number(limit) || 0, 50) || null])).rows;
+};
 app.get('/api/passports', auth, wrap(async (req, res) => res.json(await queryPassports(req.query))));
 
 // ---- helper PDF
@@ -276,10 +295,14 @@ app.get('/api/passports/export', auth, wrap(async (req, res) => {
 }));
 
 app.post('/api/passports', auth, wrap(async (req, res) => {
+  const missing = requiredPassport(req.body);
+  if (missing) return res.status(400).json({ error: missing });
   const r = await db.query(`INSERT INTO passports(${F}) VALUES(${F.map((_, i) => '$' + (i + 1))}) RETURNING *`, vals(req.body));
   res.status(201).json(r.rows[0]);
 }));
 app.put('/api/passports/:id', auth, wrap(async (req, res) => {
+  const missing = requiredPassport(req.body);
+  if (missing) return res.status(400).json({ error: missing });
   const v = vals(req.body);
   const r = await db.query(`UPDATE passports SET ${F.map((c, i) => `${c}=$${i + 1}`)}, updated_at=now() WHERE id=$${F.length + 1} RETURNING *`, [...v, req.params.id]);
   if (!r.rowCount) return res.status(404).json({ error: 'Data tidak ditemukan' });
@@ -481,11 +504,23 @@ app.get('/api/stats', auth, wrap(async (_q, res) => {
 }));
 
 // ---- OCR: diteruskan ke service Python lokal; gambar tidak disimpan
+// Satu pemindaian per akun: hasil dari foto ulang yang bertumpuk tidak boleh saling menimpa.
+const ocrBusy = new Set();
 app.post('/api/ocr', auth, uploadImage, wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Tidak ada gambar' });
-  const fd = new FormData(); fd.append('file', new Blob([req.file.buffer]), 'paspor.jpg');
-  let r; try { r = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: fd }); } catch { return res.status(503).json({ error: 'Layanan OCR belum siap, coba lagi sebentar' }); }
-  const body = await r.json().catch(() => ({})); res.status(r.status).json(r.ok ? body : { error: body.detail || 'OCR gagal', log: body.log, mrz_preview: body.mrz_preview });
+  const user = req.user.id;
+  if (ocrBusy.has(user)) {
+    return res.status(409).json({ error: 'Pemindaian sebelumnya masih diproses. Tunggu hingga selesai sebelum mengambil foto ulang.' });
+  }
+  ocrBusy.add(user);
+  try {
+    const fd = new FormData(); fd.append('file', new Blob([req.file.buffer]), 'paspor.jpg');
+    let r; try { r = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: fd }); } catch { return res.status(503).json({ error: 'Layanan OCR belum siap, coba lagi sebentar' }); }
+    const body = await r.json().catch(() => ({}));
+    res.status(r.status).json(r.ok ? body : { error: body.detail || 'OCR gagal', log: body.log, mrz_preview: body.mrz_preview });
+  } finally {
+    ocrBusy.delete(user);
+  }
 }));
 
 app.listen(4000, () => console.log('API siap di :4000'));

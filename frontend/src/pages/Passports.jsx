@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   Camera,
   ChevronDown,
   Download,
@@ -16,12 +18,23 @@ import {
   X
 } from 'lucide-react';
 import { api, download } from '../api.js';
-import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Seg, tgl, upper, useToast, VISABIO } from '../ui.jsx';
+import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Req, Seg, tgl, upper, useToast, VISABIO } from '../ui.jsx';
 
 // Field teks bebas yang otomatis disimpan dalam huruf kapital.
 // Enum status, kecamatan, dan tanggal sengaja dikecualikan.
 const UPPER_FIELDS = new Set(['name', 'bin_binti', 'passport_number', 'phone', 'porsi_number', 'notes']);
 const upperField = (k, v) => (UPPER_FIELDS.has(k) ? upper(v) : v);
+
+// Kolom yang boleh dipakai untuk pengurutan (harus sama dengan daftar di backend).
+const SORTS = [
+  { value: 'name', label: 'Nama' },
+  { value: 'visabio_date', label: 'Tanggal Visabio' },
+  { value: 'birth_date', label: 'Tanggal Lahir' },
+  { value: 'created_at', label: 'Tanggal Ditambahkan' }
+];
+const OCR_LABEL = { name: 'nama', passport_number: 'nomor paspor', birth_date: 'tanggal lahir' };
+const OCR_MIN_CONFIDENCE = 75;
+const defaultSortDir = field => (field === 'name' ? 'asc' : 'desc');
 
 const empty = {
   name: '',
@@ -40,6 +53,7 @@ const empty = {
 
 function CameraModal({ onShot, onClose }) {
   const ref = useRef();
+  const shot = useRef(false);
   const [err, setErr] = useState('');
 
   useEffect(() => {
@@ -60,7 +74,8 @@ function CameraModal({ onShot, onClose }) {
 
   const shoot = () => {
     const v = ref.current;
-    if (!v || !v.videoWidth) return;
+    if (shot.current || !v || !v.videoWidth) return;
+    shot.current = true; // cegah klik ganda mengirim beberapa hasil OCR yang saling menimpa
     const k = Math.min(1, 1800 / v.videoWidth);
     const c = document.createElement('canvas');
     c.width = v.videoWidth * k;
@@ -99,12 +114,15 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
   );
   const [cam, setCam] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
   const [newD, setNewD] = useState(null);
   const [low, setLow] = useState([]);
   const [ocrLog, setOcrLog] = useState('');
   const [ocrImg, setOcrImg] = useState('');
   const upRef = useRef(), capRef = useRef();
+  // Nomor urut + AbortController: hasil scan lama/batal tidak boleh menimpa form.
+  const ocrSeq = useRef(0), ocrAbort = useRef(null);
 
   const set = (k, v) => {
     setF(p => ({ ...p, [k]: upperField(k, v) }));
@@ -112,52 +130,71 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
   };
 
   const ocr = async blob => {
+    const id = ++ocrSeq.current;
+    ocrAbort.current?.abort(); // foto ulang membatalkan scan sebelumnya yang masih berjalan
+    const ctrl = new AbortController();
+    ocrAbort.current = ctrl;
     setCam(false);
     setBusy(true);
-    setMsg({ t: 'info', m: 'Membaca paspor di perangkat…' });
+    setLow([]);
+    setOcrLog('');
+    setOcrImg('');
+    setMsg({ t: 'info', m: 'Membaca paspor…' });
+
+    let r;
     try {
       const fd = new FormData();
       fd.append('file', blob, 'paspor.jpg');
-      const r = await api('/ocr', { method: 'POST', body: fd });
-      setOcrLog((r.log || []).join('\n'));
-      setOcrImg(r.mrz_preview || '');
-      setF(p => ({
-        ...p,
-        name: r.name ? upper(r.name) : p.name,
-        passport_number: r.passport_number ? upper(r.passport_number) : p.passport_number,
-        birth_date: r.birth_date || p.birth_date
-      }));
-      const label = { name: 'nama', passport_number: 'nomor paspor', birth_date: 'tanggal lahir' };
-      const check = Object.keys(label).filter(
-        k => !r.missing.includes(k) && ((r.confidence[k] ?? 0) < 75 || r.conflict.includes(k))
-      );
-      setLow([...r.missing, ...check]);
-      setMsg(
-        r.missing.length
-          ? {
-              t: 'warn',
-              m: `Belum terbaca: ${r.missing.map(k => label[k]).join(', ')}. Isi manual atau foto ulang.${
-                check.length ? ' Periksa juga: ' + check.map(k => label[k]).join(', ') + '.' : ''
-              }`
-            }
-          : check.length
-          ? { t: 'warn', m: `Terbaca, tetapi kurang yakin pada: ${check.map(k => label[k]).join(', ')}. Mohon periksa.` }
-          : { t: 'ok', m: 'Terbaca dengan yakin. Tetap periksa sebelum menyimpan.' }
-      );
+      r = await api('/ocr', { method: 'POST', body: fd, signal: ctrl.signal });
     } catch (e) {
+      if (id !== ocrSeq.current || e.name === 'AbortError') return; // balasan lama/dibatalkan: abaikan
       setMsg({ t: 'bad', m: e.message });
       setOcrLog((e.data?.log || []).join('\n'));
       setOcrImg(e.data?.mrz_preview || '');
+      return; // scan gagal tidak boleh mengubah data yang sudah ada
     } finally {
-      setBusy(false);
+      if (id === ocrSeq.current) {
+        setBusy(false);
+        ocrAbort.current = null;
+      }
     }
+
+    // Hanya hasil scan terbaru yang sukses yang boleh mengisi form.
+    if (id !== ocrSeq.current) return;
+    const missing = Array.isArray(r.missing) ? r.missing : [];
+    const conflict = Array.isArray(r.conflict) ? r.conflict : [];
+    const check = Object.keys(OCR_LABEL).filter(
+      k => !missing.includes(k) && ((r.confidence?.[k] ?? 0) < OCR_MIN_CONFIDENCE || conflict.includes(k))
+    );
+    const patch = {};
+    for (const k of Object.keys(OCR_LABEL)) {
+      if (missing.includes(k) || !r[k] || (r.confidence?.[k] ?? 0) < OCR_MIN_CONFIDENCE) continue;
+      patch[k] = k === 'birth_date' ? r[k] : upper(r[k]);
+    }
+    if (Object.keys(patch).length) setF(p => ({ ...p, ...patch }));
+    setOcrLog((r.log || []).join('\n'));
+    setOcrImg(r.mrz_preview || '');
+    setLow([...new Set([...missing, ...check])]);
+    const skipped = check.filter(k => !(k in patch));
+    const review = check.length ? ` Periksa juga: ${check.map(k => OCR_LABEL[k]).join(', ')}.` : '';
+    const unsure = skipped.length ? ' Bacaan kurang yakin tidak diisi otomatis.' : '';
+    setMsg(
+      missing.length
+        ? { t: 'warn', m: `Belum terbaca: ${missing.map(k => OCR_LABEL[k]).join(', ')}. Isi manual atau foto ulang.${review}${unsure}` }
+        : check.length
+        ? { t: 'warn', m: `Terbaca, tetapi perlu diperiksa: ${check.map(k => OCR_LABEL[k]).join(', ')}.${unsure}` }
+        : { t: 'ok', m: 'Terbaca dengan yakin. Tetap periksa sebelum menyimpan.' }
+    );
   };
 
-  const openCam = () => (navigator.mediaDevices?.getUserMedia ? setCam(true) : capRef.current.click());
+  const openCam = () => {
+    if (busy || saving) return;
+    navigator.mediaDevices?.getUserMedia ? setCam(true) : capRef.current.click();
+  };
   const pick = e => {
     const file = e.target.files[0];
     e.target.value = '';
-    if (file) ocr(file);
+    if (file && !busy && !saving) ocr(file);
   };
 
   const addD = async () => {
@@ -173,12 +210,16 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
   const save = async e => {
     e.preventDefault();
+    if (busy || saving) return; // jangan simpan saat OCR masih berjalan / tombol sudah ditekan
+    setSaving(true);
     try {
       await api(f.id ? `/passports/${f.id}` : '/passports', { method: f.id ? 'PUT' : 'POST', body: f });
       notify('Data paspor berhasil disimpan');
       onSaved();
     } catch (x) {
       notify(x.message, 'bad');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -199,11 +240,11 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
           <p className="muted">Dibaca langsung di server lokal menggunakan MRZ OCR. Gambar tidak dikirim ke internet.</p>
         </div>
         <div className="row">
-          <button type="button" className="btn" onClick={openCam} disabled={busy}>
+          <button type="button" className="btn" onClick={openCam} disabled={busy || saving}>
             <Camera size={18} />
             <span>Kamera</span>
           </button>
-          <button type="button" className="btn" onClick={() => upRef.current.click()} disabled={busy}>
+          <button type="button" className="btn" onClick={() => upRef.current.click()} disabled={busy || saving}>
             <Upload size={18} />
             <span>Unggah Foto</span>
           </button>
@@ -238,25 +279,26 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
       <div className="card form">
         <label className={low.includes('name') ? 'low' : ''}>
-          Nama Lengkap
+          <span>Nama Lengkap <Req /></span>
           <input required value={f.name} onChange={e => set('name', e.target.value)} />
         </label>
         <label>
-          <span>Bin / Binti <span className="opt">(opsional)</span></span>
+          <span>Bin / Binti</span>
           <input value={f.bin_binti} onChange={e => set('bin_binti', e.target.value)} />
         </label>
         <label className={low.includes('passport_number') ? 'low' : ''}>
-          Nomor Paspor
+          <span>Nomor Paspor <Req /></span>
           <input required value={f.passport_number} onChange={e => set('passport_number', e.target.value.toUpperCase())} />
         </label>
         <label className={low.includes('birth_date') ? 'low' : ''}>
-          Tanggal Lahir
+          <span>Tanggal Lahir</span>
           <input type="date" value={f.birth_date} onChange={e => set('birth_date', e.target.value)} />
         </label>
         <div className="field">
-          <label htmlFor="kec">Kecamatan</label>
+          <label htmlFor="kec"><span>Kecamatan <Req /></span></label>
           <select
             id="kec"
+            required
             value={newD !== null ? '__new' : f.kecamatan}
             onChange={e =>
               e.target.value === '__new' ? setNewD('') : (setNewD(null), set('kecamatan', e.target.value))
@@ -272,6 +314,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
             <div className="row" style={{ marginTop: '8px' }}>
               <input
                 autoFocus
+                required
                 placeholder="Nama kecamatan baru"
                 value={newD}
                 onChange={e => setNewD(e.target.value)}
@@ -298,22 +341,31 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
           <Seg label="Paspor fisik" value={f.passport_physical} options={FISIK} onChange={v => set('passport_physical', v)} />
         </div>
         <label>
-          <span>Nomor HP <span className="opt">(opsional)</span></span>
+          <span>Nomor HP</span>
           <input type="tel" inputMode="tel" placeholder="08xxxxxxxxxx" value={f.phone} onChange={e => set('phone', e.target.value)} />
         </label>
         <label>
-          <span>Nomor Porsi <span className="opt">(opsional)</span></span>
-          <input value={f.porsi_number} onChange={e => set('porsi_number', e.target.value)} />
+          <span>Nomor Porsi</span>
+          <input
+            type="tel"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="Nomor Porsi"
+            value={f.porsi_number}
+            onChange={e => set('porsi_number', e.target.value.replace(/\D/g, ''))}
+          />
         </label>
         <label className="wide">
-          <span>Catatan <span className="opt">(opsional)</span></span>
+          <span>Catatan</span>
           <textarea rows={3} value={f.notes} onChange={e => set('notes', e.target.value)} placeholder="Catatan tambahan mengenai berkas jemaah..." />
         </label>
       </div>
 
       <div className="row end">
-        <button type="button" className="btn" onClick={onCancel}>Batal</button>
-        <button className="btn primary">Simpan Data Paspor</button>
+        <button type="button" className="btn" onClick={onCancel} disabled={saving}>Batal</button>
+        <button className="btn primary" disabled={busy || saving}>
+          {saving ? 'Menyimpan…' : 'Simpan Data Paspor'}
+        </button>
       </div>
     </form>
   );
@@ -340,17 +392,23 @@ export default function Passports({ openNew }) {
     visabio_status: '',
     visabio_printed: '',
     passport_physical: '',
-    visabio_year: ''
+    visabio_year: '',
+    sort: 'name',
+    dir: 'asc'
   });
   const [showFilters, setShowFilters] = useState(false);
   const [form, setForm] = useState(openNew ? empty : null);
   const visabioYears = useVisabioYears();
 
   const loadD = () => api('/districts').then(setDistricts);
-  const load = useCallback(
-    () => api('/passports?' + new URLSearchParams(f)).then(setRows).catch(e => notify(e.message, 'bad')),
-    [f, notify]
-  );
+  // Balasan daftar yang lebih lama tidak boleh menimpa hasil filter/urutan terbaru.
+  const loadSeq = useRef(0);
+  const load = useCallback(() => {
+    const id = ++loadSeq.current;
+    return api('/passports?' + new URLSearchParams(f))
+      .then(rows => { if (id === loadSeq.current) setRows(rows); })
+      .catch(e => { if (id === loadSeq.current) notify(e.message, 'bad'); });
+  }, [f, notify]);
 
   useEffect(() => {
     loadD().catch(() => {});
@@ -391,6 +449,11 @@ export default function Passports({ openNew }) {
       visabio_year: ''
     });
   };
+
+  // Klik kolom yang sama mengubah arah urutan; pindah kolom memakai arah bawaan (nama A-Z, tanggal terbaru).
+  const toggleSort = field =>
+    setF(p => (p.sort === field ? { ...p, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { ...p, sort: field, dir: defaultSortDir(field) }));
+  const SortIcon = f.dir === 'asc' ? ArrowUp : ArrowDown;
 
   // Count active filter criteria (excluding search query)
   const activeFilters = [
@@ -477,6 +540,31 @@ export default function Passports({ openNew }) {
               }}
             />
           </button>
+
+          {/* Urutan: nama / tanggal, asc / desc */}
+          <div className="sort-wrap">
+            <label htmlFor="sort-field">Urutkan</label>
+            <select
+              id="sort-field"
+              aria-label="Kolom pengurutan"
+              value={f.sort}
+              onChange={e => setF(p => ({ ...p, sort: e.target.value, dir: defaultSortDir(e.target.value) }))}
+            >
+              {SORTS.map(s => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="sort-dir-btn"
+              onClick={() => setF(p => ({ ...p, dir: p.dir === 'asc' ? 'desc' : 'asc' }))}
+              title={f.dir === 'asc' ? 'Urutan naik, klik untuk menurun' : 'Urutan turun, klik untuk naik'}
+              aria-label={f.dir === 'asc' ? 'Ubah ke urutan menurun' : 'Ubah ke urutan naik'}
+            >
+              <SortIcon size={16} />
+              <span>{f.dir === 'asc' ? 'Naik' : 'Turun'}</span>
+            </button>
+          </div>
         </div>
 
         {/* Collapsible Filter Panel */}
@@ -608,11 +696,23 @@ export default function Passports({ openNew }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>Jemaah</th>
-              <th>Tgl Lahir</th>
+              <th>
+                <button type="button" className="th-sort" onClick={() => toggleSort('name')} title="Urutkan berdasarkan nama">
+                  Jemaah {f.sort === 'name' && <SortIcon size={13} />}
+                </button>
+              </th>
+              <th>
+                <button type="button" className="th-sort" onClick={() => toggleSort('birth_date')} title="Urutkan berdasarkan tanggal lahir">
+                  Tgl Lahir {f.sort === 'birth_date' && <SortIcon size={13} />}
+                </button>
+              </th>
               <th>Kecamatan</th>
               <th>Status Visabio</th>
-              <th>Tgl Visabio</th>
+              <th>
+                <button type="button" className="th-sort" onClick={() => toggleSort('visabio_date')} title="Urutkan berdasarkan tanggal visabio">
+                  Tgl Visabio {f.sort === 'visabio_date' && <SortIcon size={13} />}
+                </button>
+              </th>
               <th>Print</th>
               <th>Paspor Fisik</th>
               <th />

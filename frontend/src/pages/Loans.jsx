@@ -14,7 +14,7 @@ import { api, download } from '../api.js';
 import PassportPicker from '../components/PassportPicker.jsx';
 import PhotoInput from '../components/PhotoInput.jsx';
 import LoanPhoto from '../components/LoanPhoto.jsx';
-import { Badge, daysLeft, Empty, PageHead, tgl, useToast, waktu } from '../ui.jsx';
+import { Badge, daysLeft, Empty, PageHead, Req, tgl, useToast, waktu } from '../ui.jsx';
 
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const blank = () => ({
@@ -151,11 +151,11 @@ export default function Loans() {
             </p>
           </div>
           <div className="field wide">
-            <label>Pilih Paspor Jemaah</label>
+            <label><span>Pilih Paspor Jemaah <Req /></span></label>
             <PassportPicker value={picked} onChange={setPicked} />
           </div>
           <label>
-            Dipinjam oleh (Nama Lengkap)
+            <span>Dipinjam oleh (Nama Lengkap) <Req /></span>
             <input required value={f.borrower} onChange={e => set('borrower', e.target.value)} placeholder="Nama pihak peminjam" />
           </label>
           <label>
@@ -178,7 +178,7 @@ export default function Loans() {
             />
           </label>
           <label>
-            Tanggal Peminjaman
+            <span>Tanggal Peminjaman <Req /></span>
             <input type="date" required value={f.loan_date} onChange={e => set('loan_date', e.target.value)} />
           </label>
           <label>
@@ -201,7 +201,7 @@ export default function Loans() {
           </label>
           <div className="field wide">
             <label>
-              <span>Foto Bukti Fisik / Identitas <span className="opt">(opsional, sebagai pengganti tanda tangan)</span></span>
+              <span>Foto Bukti Fisik / Identitas</span>
             </label>
             <PhotoInput value={photo} onChange={setPhoto} />
           </div>

@@ -7,6 +7,9 @@ export const FISIK = ['ada', 'dipinjam', 'diserahkan', 'hilang'];
 
 export const upper = v => (typeof v === 'string' ? v.toUpperCase() : v);
 
+// Penanda field wajib. Field opsional sengaja tidak memakai penanda apa pun.
+export const Req = () => <span className="req" title="Wajib diisi" aria-label="wajib diisi"> *</span>;
+
 const TONE = {
   sudah: 'ok',
   ada: 'ok',

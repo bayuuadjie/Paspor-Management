@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { KeyRound, Plus, Shield, Trash2, User, UserPlus } from 'lucide-react';
 import { api } from '../api.js';
-import { Modal, PageHead, Seg, tgl, useToast } from '../ui.jsx';
+import { Modal, PageHead, Req, Seg, tgl, useToast } from '../ui.jsx';
 
 export default function Users({ me }) {
   const notify = useToast();
@@ -80,7 +80,7 @@ export default function Users({ me }) {
             </p>
           </div>
           <label>
-            Nama Lengkap
+            <span>Nama Lengkap <Req /></span>
             <input
               value={f.full_name}
               onChange={e => setF({ ...f, full_name: e.target.value })}
@@ -89,7 +89,7 @@ export default function Users({ me }) {
             />
           </label>
           <label>
-            Username
+            <span>Username <Req /></span>
             <input
               value={f.username}
               onChange={e => setF({ ...f, username: e.target.value.toLowerCase().trim() })}
@@ -99,7 +99,7 @@ export default function Users({ me }) {
             />
           </label>
           <label>
-            Password Sementara
+            <span>Password Sementara <Req /></span>
             <input
               type="password"
               minLength={8}

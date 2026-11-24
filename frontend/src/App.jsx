@@ -21,7 +21,7 @@ import {
   X
 } from 'lucide-react';
 import { api, getToken, logout, setToken } from './api.js';
-import { ToastHost } from './ui.jsx';
+import { Req, ToastHost } from './ui.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Passports from './pages/Passports.jsx';
 import Loans from './pages/Loans.jsx';
@@ -187,7 +187,7 @@ function Login({ onLogin, theme, toggle, notice = '' }) {
 
           <form onSubmit={submit} className="stack">
             <div className="field">
-              <label>Username</label>
+              <label><span>Username <Req /></span></label>
               <div className="input-icon-group">
                 <span className="input-icon-left"><UserIcon size={18} /></span>
                 <input
@@ -202,7 +202,7 @@ function Login({ onLogin, theme, toggle, notice = '' }) {
             </div>
 
             <div className="field">
-              <label>Password</label>
+              <label><span>Password <Req /></span></label>
               <div className="input-icon-group">
                 <span className="input-icon-left"><Lock size={18} /></span>
                 <input

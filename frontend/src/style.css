@@ -266,6 +266,12 @@ label, .field > label {
   color: var(--text);
 }
 
+/* Penanda wajib diisi; field opsional tidak memakai penanda. */
+.req {
+  color: var(--bad);
+  font-weight: 700;
+}
+
 /* ==========================================================================
    Buttons (With Royal Blue Gradient Accent)
    ========================================================================== */
@@ -865,6 +871,69 @@ label, .field > label {
   font-weight: 700;
   background: var(--primary);
   color: #fff;
+}
+
+/* Sort control (nama / tanggal + arah asc-desc) */
+.sort-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-wrap > label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sort-wrap select {
+  height: 44px;
+  min-width: 160px;
+  font-size: 0.88rem;
+}
+
+.sort-dir-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--primary);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.sort-dir-btn:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+}
+
+/* Header tabel yang bisa diklik untuk mengubah urutan */
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.th-sort:hover {
+  color: var(--primary);
 }
 
 /* Filter Dropdown / Drawer Popover Panel */
@@ -1868,6 +1937,16 @@ label, .field > label {
   .btn-filter-toggle {
     width: 100%;
     justify-content: center;
+  }
+  .sort-wrap {
+    flex-wrap: wrap;
+  }
+  .sort-wrap select {
+    flex: 1;
+    min-width: 120px;
+  }
+  .sort-dir-btn {
+    flex: 1;
   }
   .filter-grid {
     grid-template-columns: 1fr;
