@@ -52,6 +52,6 @@ export async function api(path, opts = {}) {
     const code = data?.code || 'AUTH';
     window.dispatchEvent(new CustomEvent('auth-expired', { detail: { code, message: data?.error || 'Sesi berakhir' } }));
   }
-  if (!r.ok) throw Object.assign(new Error(data?.error || 'Terjadi kesalahan'), { data });
+  if (!r.ok) throw Object.assign(new Error(data?.error || 'Terjadi kesalahan'), { data, status: r.status });
   return data;
 }

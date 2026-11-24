@@ -406,7 +406,9 @@ export default function App() {
               <b>{user.full_name || user.username}</b>
               <small className="muted">{user.role === 'admin' ? 'Administrator' : 'Staf Operasional'}</small>
             </div>
-            <ThemeBtn theme={theme} toggle={toggle} />
+            <span className="side-theme-btn">
+              <ThemeBtn theme={theme} toggle={toggle} />
+            </span>
             <button
               className="icon danger"
               onClick={handleLogout}

@@ -80,7 +80,7 @@ export default function Districts() {
         </div>
       </div>
 
-      <form className="card row" onSubmit={add}>
+      <form className="card row stack-tablet" onSubmit={add}>
         <label className="grow">
           <span>Nama Kecamatan <Req /></span>
           <div className="search-wrap">

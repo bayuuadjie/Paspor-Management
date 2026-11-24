@@ -28,8 +28,6 @@ const upperField = (k, v) => (UPPER_FIELDS.has(k) ? upper(v) : v);
 // Kolom yang boleh dipakai untuk pengurutan (harus sama dengan daftar di backend).
 const SORTS = [
   { value: 'name', label: 'Nama' },
-  { value: 'visabio_date', label: 'Tanggal Visabio' },
-  { value: 'birth_date', label: 'Tanggal Lahir' },
   { value: 'created_at', label: 'Tanggal Ditambahkan' }
 ];
 const OCR_LABEL = { name: 'nama', passport_number: 'nomor paspor', birth_date: 'tanggal lahir' };
@@ -52,35 +50,75 @@ const empty = {
 };
 
 function CameraModal({ onShot, onClose }) {
-  const ref = useRef();
+  const ref = useRef();   // elemen video
+  const frame = useRef(); // bingkai paspor: area yang benar-benar dikirim ke OCR
   const shot = useRef(false);
   const [err, setErr] = useState('');
 
   useEffect(() => {
     let stream, off = false;
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false })
-      .then(s => {
-        if (off) return s.getTracks().forEach(t => t.stop());
-        stream = s;
-        if (ref.current) ref.current.srcObject = s;
-      })
-      .catch(() => setErr('Kamera tidak bisa dibuka. Izinkan akses kamera di browser, atau pakai tombol Unggah.'));
+    (async () => {
+      let s;
+      try {
+        s = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+      } catch {
+        // Constraint tidak didukung: pakai kamera bawaan agar tetap bisa memotret.
+        try { s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
+        catch { if (!off) setErr('Kamera tidak bisa dibuka. Izinkan akses kamera di browser, atau pakai tombol Unggah.'); return; }
+      }
+      if (off) { s.getTracks().forEach(t => t.stop()); return; }
+      stream = s;
+      if (ref.current) ref.current.srcObject = s;
+
+      // Utamakan lensa utama (belakang): zoom digital dikembalikan ke 1x dan fokus otomatis terus menyala.
+      const track = s.getVideoTracks()[0];
+      const caps = track?.getCapabilities?.() || {};
+      const adv = [];
+      if (caps.zoom && typeof caps.zoom === 'object' && 'min' in caps.zoom) adv.push({ zoom: caps.zoom.min });
+      const focus = ['continuous', 'single-shot'].find(m => caps.focusMode?.includes(m));
+      if (focus) adv.push({ focusMode: focus });
+      for (const c of adv) {
+        try { await track.applyConstraints({ advanced: [c] }); } catch { /* constraint tidak didukung perangkat ini */ }
+      }
+    })();
     return () => {
       off = true;
       stream?.getTracks().forEach(t => t.stop());
     };
   }, []);
 
+  const focusAt = async e => {
+    const t = ref.current?.srcObject?.getVideoTracks?.()[0];
+    if (!t?.getCapabilities?.().pointsOfInterest) return;
+    const r = ref.current.getBoundingClientRect();
+    try {
+      await t.applyConstraints({ advanced: [{ pointsOfInterest: [{ x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }] }] });
+    } catch { /* tap-to-focus tidak didukung perangkat ini */ }
+  };
+
   const shoot = () => {
     const v = ref.current;
     if (shot.current || !v || !v.videoWidth) return;
     shot.current = true; // cegah klik ganda mengirim beberapa hasil OCR yang saling menimpa
-    const k = Math.min(1, 1800 / v.videoWidth);
+    const vr = v.getBoundingClientRect(), fr = frame.current?.getBoundingClientRect();
+    let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
+    // video memakai object-fit: cover -> petakan bingkai ke piksel asli kamera, bukan ke layar.
+    const scale = fr?.width ? Math.max(vr.width / v.videoWidth, vr.height / v.videoHeight) : 0;
+    if (scale > 0) {
+      const dx = (vr.width - v.videoWidth * scale) / 2, dy = (vr.height - v.videoHeight * scale) / 2;
+      sx = Math.max(0, (fr.left - vr.left - dx) / scale);
+      sy = Math.max(0, (fr.top - vr.top - dy) / scale);
+      sw = Math.max(1, Math.min(v.videoWidth - sx, fr.width / scale));
+      sh = Math.max(1, Math.min(v.videoHeight - sy, fr.height / scale));
+    }
+    const k = Math.min(1, 1800 / sw);
     const c = document.createElement('canvas');
-    c.width = v.videoWidth * k;
-    c.height = v.videoHeight * k;
-    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    c.width = Math.max(1, Math.round(sw * k));
+    c.height = Math.max(1, Math.round(sh * k));
+    c.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
     c.toBlob(b => onShot(b), 'image/jpeg', 0.92);
   };
 
@@ -91,11 +129,11 @@ function CameraModal({ onShot, onClose }) {
       ) : (
         <>
           <div className="cam">
-            <video ref={ref} autoPlay playsInline muted />
-            <div className="cam-frame" />
+            <video ref={ref} onClick={focusAt} autoPlay playsInline muted />
+            <div className="cam-frame" ref={frame} />
           </div>
           <p className="muted" style={{ marginBottom: '14px', fontSize: '0.86rem' }}>
-            Posisikan halaman data paspor dalam bingkai. Dua baris kode MRZ di bagian bawah halaman harus terlihat jelas dan tidak terpotong.
+            Posisikan seluruh halaman data paspor di dalam bingkai persegi panjang. Pegang ponsel mendatar bila bisa agar gambar tidak dipotong terlalu banyak. Dua baris kode MRZ di bawah harus jelas dan tidak terpotong. Ketuk layar untuk membantu fokus bila kamera mendukung.
           </p>
           <button className="btn primary block" onClick={shoot}>
             <Camera size={18} />
@@ -122,7 +160,8 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
   const [ocrImg, setOcrImg] = useState('');
   const upRef = useRef(), capRef = useRef();
   // Nomor urut + AbortController: hasil scan lama/batal tidak boleh menimpa form.
-  const ocrSeq = useRef(0), ocrAbort = useRef(null);
+  const ocrSeq = useRef(0), ocrAbort = useRef(null), ocrRetry = useRef(null);
+  useEffect(() => () => clearTimeout(ocrRetry.current), []);
 
   const set = (k, v) => {
     setF(p => ({ ...p, [k]: upperField(k, v) }));
@@ -131,6 +170,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
   const ocr = async blob => {
     const id = ++ocrSeq.current;
+    clearTimeout(ocrRetry.current);
     ocrAbort.current?.abort(); // foto ulang membatalkan scan sebelumnya yang masih berjalan
     const ctrl = new AbortController();
     ocrAbort.current = ctrl;
@@ -148,6 +188,11 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
       r = await api('/ocr', { method: 'POST', body: fd, signal: ctrl.signal });
     } catch (e) {
       if (id !== ocrSeq.current || e.name === 'AbortError') return; // balasan lama/dibatalkan: abaikan
+      if (e.status === 503) { // antrean OCR penuh / service belum siap: coba sekali lagi setelah 2 detik
+        setMsg({ t: 'warn', m: 'OCR sedang ramai, mencoba lagi sebentar…' });
+        ocrRetry.current = setTimeout(() => { if (id === ocrSeq.current) ocr(blob); }, 2000);
+        return;
+      }
       setMsg({ t: 'bad', m: e.message });
       setOcrLog((e.data?.log || []).join('\n'));
       setOcrImg(e.data?.mrz_preview || '');
@@ -701,18 +746,10 @@ export default function Passports({ openNew }) {
                   Jemaah {f.sort === 'name' && <SortIcon size={13} />}
                 </button>
               </th>
-              <th>
-                <button type="button" className="th-sort" onClick={() => toggleSort('birth_date')} title="Urutkan berdasarkan tanggal lahir">
-                  Tgl Lahir {f.sort === 'birth_date' && <SortIcon size={13} />}
-                </button>
-              </th>
+              <th>Tgl Lahir</th>
               <th>Kecamatan</th>
               <th>Status Visabio</th>
-              <th>
-                <button type="button" className="th-sort" onClick={() => toggleSort('visabio_date')} title="Urutkan berdasarkan tanggal visabio">
-                  Tgl Visabio {f.sort === 'visabio_date' && <SortIcon size={13} />}
-                </button>
-              </th>
+              <th>Tgl Visabio</th>
               <th>Print</th>
               <th>Paspor Fisik</th>
               <th />

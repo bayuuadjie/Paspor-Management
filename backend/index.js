@@ -197,7 +197,7 @@ const requiredPassport = b => {
 };
 
 // Daftar kolom pengurutan yang diizinkan (nilai dari klien tidak pernah disisipkan langsung ke SQL).
-const SORT_COLS = { name: 'name', visabio_date: 'visabio_date', birth_date: 'birth_date', created_at: 'created_at', updated_at: 'updated_at' };
+const SORT_COLS = { name: 'name', created_at: 'created_at' };
 const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', visabio_printed = '', passport_physical = '', visabio_year = '', sort = 'name', dir = 'asc', limit = '' }) => {
   const col = SORT_COLS[sort] || SORT_COLS.name;
   const order = String(dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
@@ -503,9 +503,10 @@ app.get('/api/stats', auth, wrap(async (_q, res) => {
   });
 }));
 
-// ---- OCR: diteruskan ke service Python lokal; gambar tidak disimpan
-// Satu pemindaian per akun: hasil dari foto ulang yang bertumpuk tidak boleh saling menimpa.
+// ---- OCR: diteruskan ke service Python lokal; gambar tidak disimpan.
+// Satu pemindaian per akun; antrean OCR (FIFO, terbatas) ada di service Python.
 const ocrBusy = new Set();
+const OCR_TIMEOUT_MS = 75_000; // sedikit lebih lama dari anggaran proses di reader.py (~55 detik)
 app.post('/api/ocr', auth, uploadImage, wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Tidak ada gambar' });
   const user = req.user.id;
@@ -513,12 +514,26 @@ app.post('/api/ocr', auth, uploadImage, wrap(async (req, res) => {
     return res.status(409).json({ error: 'Pemindaian sebelumnya masih diproses. Tunggu hingga selesai sebelum mengambil foto ulang.' });
   }
   ocrBusy.add(user);
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, OCR_TIMEOUT_MS);
+  const onClose = () => { if (!res.writableEnded) ctrl.abort(); }; // foto ulang / klien putus: lepaskan koneksi ke OCR
+  res.on('close', onClose);
   try {
     const fd = new FormData(); fd.append('file', new Blob([req.file.buffer]), 'paspor.jpg');
-    let r; try { r = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: fd }); } catch { return res.status(503).json({ error: 'Layanan OCR belum siap, coba lagi sebentar' }); }
+    let r;
+    try {
+      r = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: fd, signal: ctrl.signal });
+    } catch {
+      if (res.destroyed || res.writableEnded) return;
+      if (timedOut) return res.status(504).json({ error: 'OCR terlalu lama merespons. Coba foto ulang dengan cahaya yang cukup.' });
+      return res.status(503).json({ error: 'Layanan OCR belum siap atau sedang penuh, coba lagi sebentar' });
+    }
     const body = await r.json().catch(() => ({}));
     res.status(r.status).json(r.ok ? body : { error: body.detail || 'OCR gagal', log: body.log, mrz_preview: body.mrz_preview });
   } finally {
+    clearTimeout(timer);
+    res.off('close', onClose);
     ocrBusy.delete(user);
   }
 }));

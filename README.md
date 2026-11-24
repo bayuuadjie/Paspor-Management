@@ -13,3 +13,17 @@ Stack: React (Vite) + Node (Express) + PostgreSQL + Python (OCR Tesseract/Passpo
 - Log: `docker compose logs -f api` (atau `ocr`, `web`)
 - Backup: `docker compose exec -T db pg_dump -U paspor paspor > backup.sql`
 - Restore: `docker compose exec -T db psql -U paspor paspor < backup.sql`
+
+## Pengurutan data
+Hanya dua pilihan: **Nama** dan **Tanggal Ditambahkan**. Kolom lain (tanggal lahir, tanggal visabio, dll.) tidak bisa dipakai sebagai pengurutan, baik dari UI maupun lewat API.
+
+## OCR dari beberapa perangkat
+- Satu akun hanya bisa aktif di satu perangkat (sesi akan ditolak dengan pesan "sedang aktif di perangkat lain"). Untuk scan dari beberapa perangkat, pakai akun berbeda.
+- Di backend, satu akun hanya boleh punya satu scan berjalan; kiriman foto ulang yang bertumpuk ditolak (409) dan foto baru membatalkan scan lama di browser.
+- Di service OCR, semua permintaan masuk **antrean FIFO** dan diproses bergiliran oleh 1 worker (default). Antrean maksimal 8 job; bila penuh, server membalas 503 agar klien mencoba lagi, jadi gambar tidak menumpuk tanpa batas.
+- Banyaknya worker/antrean bisa diatur lewat `OCR_WORKERS` dan `OCR_QUEUE_SIZE` di `.env` lalu `docker compose up -d --force-recreate ocr`. Karena OCR memakai CPU, naikkan `OCR_WORKERS` hanya bila CPU server masih longgar.
+- Cek kondisi antrean: `curl http://localhost:8000/ocr/status` dari dalam jaringan internal, atau `docker compose exec ocr python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/ocr/status').read().decode())"`.
+- Batas waktu scan: 70 detik di service OCR, 75 detik di API; bila terlalu lama, pengguna diminta foto ulang.
+
+## Kamera OCR
+Bingkai foto mengikuti rasio halaman data paspor (persegi panjang ±1,45:1) dan hasil foto dipotong tepat sesuai bingkai sebelum dikirim ke OCR. Kamera diminta memakai lensa belakang/utama dengan zoom digital 1x dan fokus otomatis berkelanjutan; ketuk layar untuk memindahkan titik fokus bila perangkat mendukung. Foto dengan MRZ terpotong atau buram tetap perlu diperiksa manual.

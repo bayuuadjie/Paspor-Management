@@ -1504,28 +1504,54 @@ label, .field > label {
   color: #fff;
 }
 
-/* Camera */
+/* Camera: bingkai mengikuti rasio halaman data paspor (persegi panjang, bukan kotak). */
 .cam {
   position: relative;
+  width: min(100%, calc(60vh * 1.45));
+  aspect-ratio: 1.45 / 1;
+  max-height: 60vh;
+  margin: 0 auto 12px;
   background: #000;
   border-radius: var(--r);
   overflow: hidden;
-  margin-bottom: 12px;
 }
 
 .cam video {
   display: block;
   width: 100%;
-  max-height: 60vh;
+  height: 100%;
   object-fit: cover;
+  cursor: crosshair; /* ketuk untuk fokus */
 }
 
 .cam-frame {
   position: absolute;
-  inset: 8%;
-  border: 2px dashed rgba(255, 255, 255, 0.85);
-  border-radius: 12px;
+  inset: 5%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 8px;
   pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35); /* redupkan area di luar paspor */
+}
+
+.cam-frame::before,
+.cam-frame::after {
+  content: '';
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--primary);
+}
+
+.cam-frame::before {
+  top: -2px; left: -2px;
+  border-right: 0; border-bottom: 0;
+  border-radius: 8px 0 0 0;
+}
+
+.cam-frame::after {
+  right: -2px; bottom: -2px;
+  border-left: 0; border-top: 0;
+  border-radius: 0 0 8px 0;
 }
 
 /* Forms */
@@ -1720,6 +1746,24 @@ label, .field > label {
 /* ==========================================================================
    Responsive Adaptations & Mobile UX
    ========================================================================== */
+
+@media (max-width: 1024px) {
+  .row.stack-tablet {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .row.stack-tablet .grow {
+    flex: none;
+    width: 100%;
+  }
+
+  .row.stack-tablet .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 @media (max-width: 960px) {
   .app {
     display: block;
@@ -1744,6 +1788,9 @@ label, .field > label {
   .side-close-btn {
     display: grid;
     place-items: center;
+  }
+  .side-theme-btn {
+    display: none;
   }
   .scrim {
     display: block;
@@ -2040,7 +2087,8 @@ label, .field > label {
     max-width: 100%;
     height: auto;
   }
-  .cam video {
+  .cam {
+    width: min(100%, calc(45vh * 1.45));
     max-height: 45vh;
   }
 }

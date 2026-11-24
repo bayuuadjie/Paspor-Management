@@ -16,6 +16,10 @@ services:
     build: ./ocr
     restart: unless-stopped
     networks: [internal]
+    # OCR diproses bergiliran (1 worker). Antrean dibatasi agar pemindaian dari banyak perangkat tidak menumpuk.
+    environment:
+      OCR_WORKERS: ${OCR_WORKERS:-1}
+      OCR_QUEUE_SIZE: ${OCR_QUEUE_SIZE:-8}
   api:
     build: ./backend
     restart: unless-stopped
