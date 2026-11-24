@@ -14,7 +14,10 @@ import { api, download } from '../api.js';
 import PassportPicker from '../components/PassportPicker.jsx';
 import PhotoInput from '../components/PhotoInput.jsx';
 import LoanPhoto from '../components/LoanPhoto.jsx';
-import { Badge, daysLeft, Empty, PageHead, Req, tgl, useToast, waktu } from '../ui.jsx';
+import { Badge, daysLeft, Empty, PageHead, Pagination, Req, tgl, useToast, waktu } from '../ui.jsx';
+
+// Jumlah baris per halaman agar tabel tetap ringkas dan mudah dibaca.
+const PAGE_SIZE = 50;
 
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const blank = () => ({
@@ -46,6 +49,7 @@ export default function Loans() {
   const [photo, setPhoto] = useState(null);
   const [view, setView] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [page, setPage] = useState(1);
 
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const load = () =>
@@ -56,6 +60,22 @@ export default function Loans() {
   useEffect(() => {
     load();
   }, [status]);
+
+  // Ganti filter status selalu kembali ke halaman pertama.
+  useEffect(() => {
+    setPage(1);
+  }, [status]);
+
+  // Jaga nomor halaman tetap valid setelah data berubah (mis. setelah pengembalian).
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil((loans?.length || 0) / PAGE_SIZE));
+    setPage(p => Math.min(p, pages));
+  }, [loans]);
+
+  // Potong data sesuai halaman aktif; nomor halaman dijaga agar tidak melewati jumlah halaman.
+  const total = loans?.length || 0;
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(total / PAGE_SIZE)));
+  const pageRows = (loans || []).slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   const lend = async e => {
     e.preventDefault();
@@ -236,68 +256,71 @@ export default function Loans() {
 
       {/* Tabel Riwayat Peminjaman */}
       <div className="card flush">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>Paspor</th>
-              <th>Peminjam</th>
-              <th>Tgl Pinjam</th>
-              <th>Rencana Kembali</th>
-              <th>Catatan</th>
-              <th>Foto Bukti</th>
-              <th>Status</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {(loans || []).map(l => (
-              <tr key={l.id}>
-                <td data-label="Paspor">
-                  <b>{l.name}</b>
-                  <small className="muted" style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.passport_number}</small>
-                </td>
-                <td data-label="Peminjam">
-                  <div className="tbl-cell-stack">
-                    <b>{l.borrower}</b>
-                    {l.borrower_phone && <small className="muted">{l.borrower_phone}</small>}
-                    {l.borrower_address && <small className="muted">{l.borrower_address}</small>}
-                  </div>
-                </td>
-                <td data-label="Tgl pinjam">{tgl(l.loan_date)}</td>
-                <td data-label="Rencana kembali">
-                  <div className="tbl-cell-stack">
-                    <span>{tgl(l.due_date)}</span>
-                    <DueFlag loan={l} />
-                  </div>
-                </td>
-                <td data-label="Catatan">{l.note || '–'}</td>
-                <td data-label="Foto">
-                  <button className="btn sm" onClick={() => setView(l)}>
-                    <Camera size={14} />
-                    <span>{l.has_photo ? 'Lihat Foto' : '+ Tambah'}</span>
-                  </button>
-                </td>
-                <td data-label="Status">
-                  {l.returned_at ? (
-                    <span className="badge ok">
-                      <span className="badge-dot" />
-                      <span>Kembali ({waktu(l.returned_at)})</span>
-                    </span>
-                  ) : (
-                    <Badge v="dipinjam" />
-                  )}
-                </td>
-                <td className="act">
-                  {!l.returned_at && (
-                    <button className="btn primary sm" onClick={() => back(l)}>
-                      <span>Tandai Kembali</span>
-                    </button>
-                  )}
-                </td>
+        <div className="table-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Paspor</th>
+                <th>Peminjam</th>
+                <th>Tgl Pinjam</th>
+                <th>Rencana Kembali</th>
+                <th>Catatan</th>
+                <th>Foto Bukti</th>
+                <th>Status</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {pageRows.map(l => (
+                <tr key={l.id}>
+                  <td data-label="Paspor">
+                    <b>{l.name}</b>
+                    <small className="muted" style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.passport_number}</small>
+                  </td>
+                  <td data-label="Peminjam">
+                    <div className="tbl-cell-stack">
+                      <b>{l.borrower}</b>
+                      {l.borrower_phone && <small className="muted">{l.borrower_phone}</small>}
+                      {l.borrower_address && <small className="muted">{l.borrower_address}</small>}
+                    </div>
+                  </td>
+                  <td data-label="Tgl pinjam">{tgl(l.loan_date)}</td>
+                  <td data-label="Rencana kembali">
+                    <div className="tbl-cell-stack">
+                      <span>{tgl(l.due_date)}</span>
+                      <DueFlag loan={l} />
+                    </div>
+                  </td>
+                  <td data-label="Catatan" className={'tbl-notes' + (l.note ? '' : ' muted')}>{l.note || '–'}</td>
+                  <td data-label="Foto">
+                    <button className="btn sm" onClick={() => setView(l)}>
+                      <Camera size={14} />
+                      <span>{l.has_photo ? 'Lihat Foto' : '+ Tambah'}</span>
+                    </button>
+                  </td>
+                  <td data-label="Status">
+                    {l.returned_at ? (
+                      <span className="badge ok">
+                        <span className="badge-dot" />
+                        <span>Kembali ({waktu(l.returned_at)})</span>
+                      </span>
+                    ) : (
+                      <Badge v="dipinjam" />
+                    )}
+                  </td>
+                  <td className="act">
+                    {!l.returned_at && (
+                      <button className="btn primary sm" onClick={() => back(l)}>
+                        <span>Tandai Kembali</span>
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pagination page={currentPage} total={total} pageSize={PAGE_SIZE} onPage={setPage} label="peminjaman" />
         {loans && !loans.length && <Empty>Belum ada catatan peminjaman paspor.</Empty>}
       </div>
 

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Info, X } from 'lucide-react';
 
 export const VISABIO = ['sudah', 'belum', 'mengulang', 'under review', 'ditolak'];
 export const PRINT = ['belum', 'sudah'];
@@ -112,3 +112,45 @@ export const PageHead = ({ title, sub, children }) => (
 );
 
 export const Empty = ({ children }) => <div className="empty">{children}</div>;
+
+// Navigasi halaman tabel: batasi jumlah baris yang tampil dan sediakan tombol sebelumnya/berikutnya.
+export function Pagination({ page, total, pageSize = 50, onPage, label = 'data' }) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (!total || total <= pageSize) return null;
+  const current = Math.min(Math.max(page, 1), pages);
+  const from = (current - 1) * pageSize + 1;
+  const to = Math.min(total, current * pageSize);
+
+  return (
+    <nav className="pagination" aria-label="Navigasi halaman tabel">
+      <span className="pagination-info">
+        Menampilkan <b>{from}–{to}</b> dari <b>{total}</b> {label}
+      </span>
+      <div className="pagination-actions">
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => onPage(current - 1)}
+          disabled={current <= 1}
+          aria-label="Halaman sebelumnya"
+        >
+          <ChevronLeft size={15} />
+          <span>Sebelumnya</span>
+        </button>
+        <span className="pagination-page">
+          Halaman <b>{current}</b> / {pages}
+        </span>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => onPage(current + 1)}
+          disabled={current >= pages}
+          aria-label="Halaman berikutnya"
+        >
+          <span>Berikutnya</span>
+          <ChevronRight size={15} />
+        </button>
+      </div>
+    </nav>
+  );
+}

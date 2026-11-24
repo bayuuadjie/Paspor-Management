@@ -18,7 +18,10 @@ import {
   X
 } from 'lucide-react';
 import { api, download } from '../api.js';
-import { Badge, Empty, FISIK, Modal, PageHead, PRINT, Req, Seg, tgl, upper, useToast, VISABIO } from '../ui.jsx';
+import { Badge, Empty, FISIK, Modal, PageHead, Pagination, PRINT, Req, Seg, tgl, upper, useToast, VISABIO } from '../ui.jsx';
+
+// Jumlah baris per halaman agar tabel tetap ringkas dan mudah dibaca.
+const PAGE_SIZE = 50;
 
 // Field teks bebas yang otomatis disimpan dalam huruf kapital.
 // Enum status, kecamatan, dan tanggal sengaja dikecualikan.
@@ -443,6 +446,7 @@ export default function Passports({ openNew }) {
   });
   const [showFilters, setShowFilters] = useState(false);
   const [form, setForm] = useState(openNew ? empty : null);
+  const [page, setPage] = useState(1);
   const visabioYears = useVisabioYears();
 
   const loadD = () => api('/districts').then(setDistricts);
@@ -463,6 +467,17 @@ export default function Passports({ openNew }) {
     const id = setTimeout(load, 200);
     return () => clearTimeout(id);
   }, [load]);
+
+  // Setiap perubahan filter, pencarian, atau urutan kembali ke halaman pertama.
+  useEffect(() => {
+    setPage(1);
+  }, [f.q, f.kecamatan, f.visabio_status, f.visabio_printed, f.passport_physical, f.visabio_year, f.sort, f.dir]);
+
+  // Jaga nomor halaman tetap valid setelah data berubah (mis. setelah menghapus data).
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil((rows?.length || 0) / PAGE_SIZE));
+    setPage(p => Math.min(p, pages));
+  }, [rows]);
 
   const exportData = async fmt => {
     try {
@@ -508,6 +523,11 @@ export default function Passports({ openNew }) {
     f.passport_physical ? { key: 'passport_physical', label: 'Fisik', val: f.passport_physical } : null,
     f.visabio_year ? { key: 'visabio_year', label: 'Tahun', val: f.visabio_year } : null
   ].filter(Boolean);
+
+  // Potong data sesuai halaman aktif; nomor halaman dijaga agar tidak melewati jumlah halaman.
+  const total = rows?.length || 0;
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(total / PAGE_SIZE)));
+  const pageRows = (rows || []).slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   if (form) {
     return (
@@ -738,64 +758,69 @@ export default function Passports({ openNew }) {
 
       {/* Main Table Card */}
       <div className="card flush">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>
-                <button type="button" className="th-sort" onClick={() => toggleSort('name')} title="Urutkan berdasarkan nama">
-                  Jemaah {f.sort === 'name' && <SortIcon size={13} />}
-                </button>
-              </th>
-              <th>Tgl Lahir</th>
-              <th>Kecamatan</th>
-              <th>Status Visabio</th>
-              <th>Tgl Visabio</th>
-              <th>Print</th>
-              <th>Paspor Fisik</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {(rows || []).map(p => (
-              <tr key={p.id}>
-                <td data-label="Jemaah" title={p.notes || undefined}>
-                  <b>{p.name}</b>
-                  {p.bin_binti && <small className="muted">{p.bin_binti}</small>}
-                  <small className="muted" style={{ fontFamily: 'monospace', fontWeight: 600 }}>{p.passport_number}</small>
-                  {(p.phone || p.porsi_number) && (
-                    <small className="muted">
-                      {[p.phone, p.porsi_number && `Porsi: ${p.porsi_number}`].filter(Boolean).join(' · ')}
-                    </small>
-                  )}
-                </td>
-                <td data-label="Tgl lahir">{tgl(p.birth_date)}</td>
-                <td data-label="Kecamatan">{p.kecamatan || '–'}</td>
-                <td data-label="Visabio"><Badge v={p.visabio_status} /></td>
-                <td data-label="Tgl visabio">{tgl(p.visabio_date)}</td>
-                <td data-label="Print"><Badge v={p.visabio_printed} /></td>
-                <td data-label="Paspor fisik"><Badge v={p.passport_physical} /></td>
-                <td className="act">
-                  <button
-                    className="icon"
-                    onClick={() => setForm(p)}
-                    aria-label="Ubah data paspor"
-                    title="Ubah data"
-                  >
-                    <Pencil size={16} />
+        <div className="table-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" className="th-sort" onClick={() => toggleSort('name')} title="Urutkan berdasarkan nama">
+                    Jemaah {f.sort === 'name' && <SortIcon size={13} />}
                   </button>
-                  <button
-                    className="icon danger"
-                    onClick={() => del(p)}
-                    aria-label="Hapus data paspor"
-                    title="Hapus data"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </td>
+                </th>
+                <th>Tgl Lahir</th>
+                <th>Kecamatan</th>
+                <th>Status Visabio</th>
+                <th>Tgl Visabio</th>
+                <th>Print</th>
+                <th>Paspor Fisik</th>
+                <th>Catatan</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {pageRows.map(p => (
+                <tr key={p.id}>
+                  <td data-label="Jemaah">
+                    <b>{p.name}</b>
+                    {p.bin_binti && <small className="muted">{p.bin_binti}</small>}
+                    <small className="muted" style={{ fontFamily: 'monospace', fontWeight: 600 }}>{p.passport_number}</small>
+                    {(p.phone || p.porsi_number) && (
+                      <small className="muted">
+                        {[p.phone, p.porsi_number && `Porsi: ${p.porsi_number}`].filter(Boolean).join(' · ')}
+                      </small>
+                    )}
+                  </td>
+                  <td data-label="Tgl lahir">{tgl(p.birth_date)}</td>
+                  <td data-label="Kecamatan">{p.kecamatan || '–'}</td>
+                  <td data-label="Visabio"><Badge v={p.visabio_status} /></td>
+                  <td data-label="Tgl visabio">{tgl(p.visabio_date)}</td>
+                  <td data-label="Print"><Badge v={p.visabio_printed} /></td>
+                  <td data-label="Paspor fisik"><Badge v={p.passport_physical} /></td>
+                  <td data-label="Catatan" className={'tbl-notes' + (p.notes ? '' : ' muted')}>{p.notes || '–'}</td>
+                  <td className="act">
+                    <button
+                      className="icon"
+                      onClick={() => setForm(p)}
+                      aria-label="Ubah data paspor"
+                      title="Ubah data"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                    <button
+                      className="icon danger"
+                      onClick={() => del(p)}
+                      aria-label="Hapus data paspor"
+                      title="Hapus data"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pagination page={currentPage} total={total} pageSize={PAGE_SIZE} onPage={setPage} label="paspor" />
         {rows && !rows.length && (
           <Empty>
             <p style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '4px' }}>Tidak ada data yang cocok</p>
