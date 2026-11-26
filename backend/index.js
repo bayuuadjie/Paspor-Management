@@ -304,6 +304,7 @@ app.get('/api/passports/export', auth, wrap(async (req, res) => {
 // ---- import passports dari Excel (.xlsx/.xlsm)
 // Hanya 4 kolom yang dipakai: No Porsi, Nama, Kecamatan, No. Paspor.
 // Kolom lain di file (No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap) diabaikan.
+const IMPORT_HEADERS = ['No', 'No Porsi', 'Nama', 'Alamat', 'Kecamatan', 'Provinsi', 'Kab Kota', 'Usia', 'Kategori', 'Tahap', 'No. Paspor'];
 const normHead = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const HEAD_MAP = {
   noporsi: 'porsi_number', nomorporsi: 'porsi_number',
@@ -324,6 +325,35 @@ const cellText = cell => {
   }
   return String(v).trim();
 };
+
+// Template kosong: sheet pertama harus dipakai sebagai data, sheet Petunjuk diabaikan import.
+app.get('/api/passports/import/template', auth, wrap(async (_q, res) => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Data Paspor', { views: [{ state: 'frozen', ySplit: 1 }] });
+  ws.columns = IMPORT_HEADERS.map(header => ({
+    header, width: header === 'Nama' ? 30 : header === 'Alamat' ? 34 : header === 'No. Paspor' ? 18 : 15
+  }));
+  const head = ws.getRow(1);
+  head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  head.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0C6B58' } }; });
+
+  const guide = wb.addWorksheet('Petunjuk');
+  guide.columns = [{ width: 24 }, { width: 95 }];
+  guide.addRows([
+    ['Kolom dipakai', 'No Porsi, Nama, Kecamatan, No. Paspor'],
+    ['Kolom diabaikan', 'No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap'],
+    ['Wajib diisi', 'Nama, Kecamatan, No. Paspor. Baris kosong pada salah satu kolom ini dilewati.'],
+    ['Duplikat', 'No. Paspor yang sudah terdaftar atau dobel di dalam file dilewati.'],
+    ['Nilai bawaan', 'Status visabio = belum, tanggal visabio kosong, print visabio = belum, paspor fisik = ada.'],
+    ['Format nomor', 'Simpan No. Paspor dan No Porsi sebagai teks/angka penuh agar tidak menjadi notasi ilmiah.'],
+    ['Catatan', 'Isi data pada sheet "Data Paspor" mulai baris 2. Sheet Petunjuk tidak dibaca saat import.']
+  ]);
+  guide.getRow(1).font = { bold: true };
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="template-import-paspor.xlsx"');
+  await wb.xlsx.write(res); res.end();
+}));
 
 app.post('/api/passports/import', auth, uploadExcel, wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Pilih file Excel (.xlsx) terlebih dahulu.' });
@@ -656,38 +686,58 @@ app.get('/api/stats', auth, wrap(async (_q, res) => {
 }));
 
 // ---- OCR: diteruskan ke service Python lokal; gambar tidak disimpan.
-// Satu pemindaian per akun; antrean OCR (FIFO, terbatas) ada di service Python.
-const ocrBusy = new Set();
+// Setiap job punya id agar scan baru / klien yang putus bisa membatalkan job yang masih mengantre.
+const ocrBusy = new Map(); // userId -> jobId
 const OCR_TIMEOUT_MS = 75_000; // sedikit lebih lama dari anggaran proses di reader.py (~55 detik)
-app.post('/api/ocr', auth, uploadImage, wrap(async (req, res) => {
+const cancelOcrJob = id => fetch(`${OCR_URL}/ocr/cancel`, {
+  method: 'POST', headers: { 'X-OCR-Job-ID': id }, signal: AbortSignal.timeout(2000)
+}).catch(() => {});
+const forwardOcr = (endpoint, filename) => wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Tidak ada gambar' });
   const user = req.user.id;
-  if (ocrBusy.has(user)) {
-    return res.status(409).json({ error: 'Pemindaian sebelumnya masih diproses. Tunggu hingga selesai sebelum mengambil foto ulang.' });
-  }
-  ocrBusy.add(user);
+  const jobId = crypto.randomUUID();
+  const previous = ocrBusy.get(user);
+  if (previous) cancelOcrJob(previous); // foto baru membatalkan job lama yang belum sempat diproses
+  ocrBusy.set(user, jobId);
+
   const ctrl = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, OCR_TIMEOUT_MS);
-  const onClose = () => { if (!res.writableEnded) ctrl.abort(); }; // foto ulang / klien putus: lepaskan koneksi ke OCR
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); cancelOcrJob(jobId); }, OCR_TIMEOUT_MS);
+  const onClose = () => {
+    if (res.writableEnded) return;
+    ctrl.abort();
+    cancelOcrJob(jobId); // jangan biarkan job yatim mengisi antrean OCR
+  };
   res.on('close', onClose);
   try {
-    const fd = new FormData(); fd.append('file', new Blob([req.file.buffer]), 'paspor.jpg');
+    const fd = new FormData(); fd.append('file', new Blob([req.file.buffer]), filename);
     let r;
     try {
-      r = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: fd, signal: ctrl.signal });
+      r = await fetch(`${OCR_URL}${endpoint}`, {
+        method: 'POST', body: fd, signal: ctrl.signal, headers: { 'X-OCR-Job-ID': jobId }
+      });
     } catch {
       if (res.destroyed || res.writableEnded) return;
+      cancelOcrJob(jobId);
       if (timedOut) return res.status(504).json({ error: 'OCR terlalu lama merespons. Coba foto ulang dengan cahaya yang cukup.' });
-      return res.status(503).json({ error: 'Layanan OCR belum siap atau sedang penuh, coba lagi sebentar' });
+      return res.status(503).json({
+        error: 'Layanan OCR tidak merespons. Periksa container ocr dengan: docker compose logs ocr',
+        code: 'OCR_UNAVAILABLE'
+      });
     }
     const body = await r.json().catch(() => ({}));
-    res.status(r.status).json(r.ok ? body : { error: body.detail || 'OCR gagal', log: body.log, mrz_preview: body.mrz_preview });
+    res.status(r.status).json(r.ok ? body : {
+      error: body.detail || 'OCR gagal', code: body.code, log: body.log,
+      ...(endpoint === '/ocr' ? { mrz_preview: body.mrz_preview } : { text: body.text })
+    });
   } finally {
     clearTimeout(timer);
     res.off('close', onClose);
-    ocrBusy.delete(user);
+    // Job lama yang dibatalkan tidak boleh menghapus penanda job baru.
+    if (ocrBusy.get(user) === jobId) ocrBusy.delete(user);
   }
-}));
+});
+app.post('/api/ocr', auth, uploadImage, forwardOcr('/ocr', 'paspor.jpg'));
+app.post('/api/ocr/visabio', auth, uploadImage, forwardOcr('/ocr/visabio', 'visabio.jpg'));
 
 app.listen(4000, () => console.log('API siap di :4000'));

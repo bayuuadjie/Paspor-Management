@@ -36,6 +36,32 @@ const SORTS = [
 ];
 const OCR_LABEL = { name: 'nama', passport_number: 'nomor paspor', birth_date: 'tanggal lahir' };
 const OCR_MIN_CONFIDENCE = 75;
+// Antrean OCR bisa penuh bila banyak perangkat scan bersamaan. Coba ulang dengan jeda membesar
+// di dalam satu permintaan: status "membaca" tidak berubah-ubah saat retry berjalan.
+const OCR_RETRY_DELAYS = [2000, 4000, 8000, 12000];
+const abortedError = () => Object.assign(new Error('Aborted'), { name: 'AbortError' });
+const ocrDelay = (ms, signal) => new Promise((resolve, reject) => {
+  const onAbort = () => { clearTimeout(timer); reject(abortedError()); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
+async function postOcr(path, blob, signal, onWait) {
+  for (let attempt = 0; ; attempt++) {
+    if (signal?.aborted) throw abortedError();
+    const fd = new FormData();
+    fd.append('file', blob, path === '/ocr' ? 'paspor.jpg' : 'visabio.jpg');
+    try {
+      return await api(path, { method: 'POST', body: fd, signal });
+    } catch (e) {
+      // 503 dari antrean Python boleh dicoba lagi; 503 karena layanan OCR mati tidak ada gunanya diulang.
+      const queueFull = e.status === 503 && e.data?.code !== 'OCR_UNAVAILABLE';
+      const retryable = (queueFull || e.status === 409) && attempt < OCR_RETRY_DELAYS.length;
+      if (!retryable || signal?.aborted) throw e;
+      onWait?.(attempt + 1, OCR_RETRY_DELAYS.length);
+      await ocrDelay(OCR_RETRY_DELAYS[attempt], signal);
+    }
+  }
+}
 const defaultSortDir = field => (field === 'name' ? 'asc' : 'desc');
 
 const empty = {
@@ -53,7 +79,7 @@ const empty = {
   notes: ''
 };
 
-function CameraModal({ onShot, onClose }) {
+function CameraModal({ onShot, onClose, title = 'Foto Halaman Data Paspor', hint = 'Posisikan seluruh halaman data paspor di dalam bingkai persegi panjang. Pegang ponsel mendatar bila bisa agar gambar tidak dipotong terlalu banyak. Dua baris kode MRZ di bawah harus jelas dan tidak terpotong. Ketuk layar untuk membantu fokus bila kamera mendukung.' }) {
   const ref = useRef();   // elemen video
   const frame = useRef(); // bingkai paspor: area yang benar-benar dikirim ke OCR
   const shot = useRef(false);
@@ -127,7 +153,7 @@ function CameraModal({ onShot, onClose }) {
   };
 
   return (
-    <Modal title="Foto Halaman Data Paspor" onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       {err ? (
         <p className="err">{err}</p>
       ) : (
@@ -137,7 +163,7 @@ function CameraModal({ onShot, onClose }) {
             <div className="cam-frame" ref={frame} />
           </div>
           <p className="muted" style={{ marginBottom: '14px', fontSize: '0.86rem' }}>
-            Posisikan seluruh halaman data paspor di dalam bingkai persegi panjang. Pegang ponsel mendatar bila bisa agar gambar tidak dipotong terlalu banyak. Dua baris kode MRZ di bawah harus jelas dan tidak terpotong. Ketuk layar untuk membantu fokus bila kamera mendukung.
+            {hint}
           </p>
           <button className="btn primary block" onClick={shoot}>
             <Camera size={18} />
@@ -164,8 +190,7 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
   const [ocrImg, setOcrImg] = useState('');
   const upRef = useRef(), capRef = useRef();
   // Nomor urut + AbortController: hasil scan lama/batal tidak boleh menimpa form.
-  const ocrSeq = useRef(0), ocrAbort = useRef(null), ocrRetry = useRef(null);
-  useEffect(() => () => clearTimeout(ocrRetry.current), []);
+  const ocrSeq = useRef(0), ocrAbort = useRef(null);
 
   const set = (k, v) => {
     setF(p => ({ ...p, [k]: upperField(k, v) }));
@@ -174,7 +199,6 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
   const ocr = async blob => {
     const id = ++ocrSeq.current;
-    clearTimeout(ocrRetry.current);
     ocrAbort.current?.abort(); // foto ulang membatalkan scan sebelumnya yang masih berjalan
     const ctrl = new AbortController();
     ocrAbort.current = ctrl;
@@ -187,16 +211,13 @@ function PassportForm({ initial, districts, reloadDistricts, onSaved, onCancel }
 
     let r;
     try {
-      const fd = new FormData();
-      fd.append('file', blob, 'paspor.jpg');
-      r = await api('/ocr', { method: 'POST', body: fd, signal: ctrl.signal });
+      r = await postOcr('/ocr', blob, ctrl.signal, (n, max) => {
+        if (id === ocrSeq.current) {
+          setMsg({ t: 'warn', m: `OCR sedang ramai, tetap mencoba… (${n}/${max})` });
+        }
+      });
     } catch (e) {
       if (id !== ocrSeq.current || e.name === 'AbortError') return; // balasan lama/dibatalkan: abaikan
-      if (e.status === 503) { // antrean OCR penuh / service belum siap: coba sekali lagi setelah 2 detik
-        setMsg({ t: 'warn', m: 'OCR sedang ramai, mencoba lagi sebentar…' });
-        ocrRetry.current = setTimeout(() => { if (id === ocrSeq.current) ocr(blob); }, 2000);
-        return;
-      }
       setMsg({ t: 'bad', m: e.message });
       setOcrLog((e.data?.log || []).join('\n'));
       setOcrImg(e.data?.mrz_preview || '');
@@ -431,6 +452,57 @@ function useVisabioYears() {
   return years;
 }
 
+function ImportHelp({ onPick, onClose, notify }) {
+  const [downloading, setDownloading] = useState(false);
+  const template = async () => {
+    setDownloading(true);
+    try {
+      await download('/passports/import/template', 'template-import-paspor.xlsx');
+    } catch (e) {
+      notify(e.message, 'bad');
+    } finally {
+      setDownloading(false);
+    }
+  };
+  return (
+    <Modal title="Cara Import Excel" onClose={onClose}>
+      <p className="muted" style={{ marginBottom: '12px', fontSize: '0.86rem' }}>
+        Siapkan file <b>.xlsx/.xlsm</b> dengan nama kolom berikut. Header boleh ada judul di atasnya (dicari otomatis di 30 baris pertama).
+      </p>
+      <div className="import-cols">
+        <div>
+          <h4>Dipakai (wajib ada)</h4>
+          <ul>
+            <li><b>No Porsi</b></li>
+            <li><b>Nama</b></li>
+            <li><b>Kecamatan</b></li>
+            <li><b>No. Paspor</b></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Diabaikan</h4>
+          <p>No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap</p>
+        </div>
+      </div>
+      <ul className="import-rules">
+        <li>Baris dengan Nama, Kecamatan, atau No. Paspor kosong dilewati.</li>
+        <li>No. Paspor duplikat (di file atau di database) dilewati.</li>
+        <li>Status visabio &amp; print visabio diisi <b>belum</b>, tanggal visabio dikosongkan.</li>
+      </ul>
+      <div className="row" style={{ marginTop: '16px', flexWrap: 'wrap', gap: '8px' }}>
+        <button className="btn" onClick={template} disabled={downloading}>
+          <Download size={17} />
+          <span>{downloading ? 'Mengunduh…' : 'Unduh Template'}</span>
+        </button>
+        <button className="btn primary" onClick={onPick}>
+          <FileUp size={17} />
+          <span>Pilih File Excel</span>
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function ImportResult({ result, onClose }) {
   const issues = result.issues || [];
   return (
@@ -478,7 +550,13 @@ export default function Passports({ openNew }) {
   const [page, setPage] = useState(1);
   const [importResult, setImportResult] = useState(null);
   const [importing, setImporting] = useState(false);
+  const [showImportHelp, setShowImportHelp] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState(null);
   const impRef = useRef();
+  const scanRef = useRef();
+  const scanAbort = useRef(null);
   const visabioYears = useVisabioYears();
 
   const loadD = () => api('/districts').then(setDistricts);
@@ -540,6 +618,38 @@ export default function Passports({ openNew }) {
     } finally {
       setImporting(false);
     }
+  };
+
+  // OCR kertas visabio: nomor paspor di sebelah "Passport Number" dipakai sebagai kata kunci pencarian.
+  const scanVisabio = async blob => {
+    setScanOpen(false);
+    scanAbort.current?.abort();
+    const ctrl = new AbortController();
+    scanAbort.current = ctrl;
+    setScanning(true);
+    setScanMsg(null);
+    try {
+      const r = await postOcr('/ocr/visabio', blob, ctrl.signal, (n, max) => {
+        setScanMsg({ t: 'warn', m: `OCR sedang ramai, tetap mencoba… (${n}/${max})` });
+      });
+      setF(p => ({ ...p, q: r.passport_number }));
+      setScanMsg({ t: 'ok', m: `Nomor paspor terbaca: ${r.passport_number}. Data yang cocok ditampilkan di bawah.` });
+      notify(`Nomor paspor ${r.passport_number} dipakai untuk pencarian`);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      const text = e.data?.text ? ` Teks terbaca: ${e.data.text.slice(0, 160)}` : '';
+      setScanMsg({ t: 'bad', m: e.message + text });
+      notify(e.message, 'bad');
+    } finally {
+      if (scanAbort.current === ctrl) scanAbort.current = null;
+      setScanning(false);
+    }
+  };
+
+  const pickVisabio = e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file && !scanning) scanVisabio(file);
   };
 
   const del = async p => {
@@ -609,7 +719,7 @@ export default function Passports({ openNew }) {
           <FileText size={17} />
           <span>PDF</span>
         </button>
-        <button className="btn" onClick={() => impRef.current.click()} disabled={importing} title="Import data dari file Excel (.xlsx)">
+        <button className="btn" onClick={() => setShowImportHelp(true)} disabled={importing} title="Lihat format kolom lalu import file Excel (.xlsx)">
           <FileUp size={17} />
           <span>{importing ? 'Mengimport…' : 'Import Excel'}</span>
         </button>
@@ -625,6 +735,8 @@ export default function Passports({ openNew }) {
           <span>Tambah Paspor</span>
         </button>
       </PageHead>
+
+      {scanMsg && <p className={'note ' + scanMsg.t} role="status">{scanMsg.m}</p>}
 
       {/* Unified Filter Toolbar */}
       <div className="filter-toolbar">
@@ -648,6 +760,19 @@ export default function Passports({ openNew }) {
               </button>
             )}
           </div>
+
+          {/* Scan kertas visabio -> nomor paspor dipakai sebagai kata kunci */}
+          <button
+            type="button"
+            className="btn search-scan"
+            disabled={scanning}
+            onClick={() => (navigator.mediaDevices?.getUserMedia ? setScanOpen(true) : scanRef.current.click())}
+            title="Scan kertas visabio untuk mencari nomor paspor"
+          >
+            <ScanLine size={17} />
+            <span>{scanning ? 'Memindai…' : 'Scan Visabio'}</span>
+          </button>
+          <input ref={scanRef} type="file" accept="image/*" hidden onChange={pickVisabio} />
 
           {/* Single Consolidated Filter Button */}
           <button
@@ -900,7 +1025,22 @@ export default function Passports({ openNew }) {
           </Empty>
         )}
       </div>
+      {showImportHelp && (
+        <ImportHelp
+          notify={notify}
+          onClose={() => setShowImportHelp(false)}
+          onPick={() => { setShowImportHelp(false); impRef.current.click(); }}
+        />
+      )}
       {importResult && <ImportResult result={importResult} onClose={() => setImportResult(null)} />}
+      {scanOpen && (
+        <CameraModal
+          title="Foto Kertas Visabio"
+          hint="Posisikan area bertuliskan 'Passport Number' dan nomornya di dalam bingkai. Foto lurus dari atas, terang, tanpa pantulan cahaya. Ketuk layar untuk membantu fokus bila kamera mendukung."
+          onClose={() => setScanOpen(false)}
+          onShot={scanVisabio}
+        />
+      )}
     </>
   );
 }

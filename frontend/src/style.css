@@ -890,6 +890,12 @@ label, .field > label {
   color: var(--text);
 }
 
+.search-scan {
+  flex: 0 0 auto;
+  height: 44px;
+  white-space: nowrap;
+}
+
 /* Single Filter Button */
 .btn-filter-toggle {
   display: inline-flex;
@@ -1524,6 +1530,52 @@ label, .field > label {
   margin: 0;
   font-size: 1.15rem;
   font-weight: 700;
+}
+
+/* Panduan format sebelum import Excel */
+.import-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.import-cols > div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+
+.import-cols h4 {
+  margin: 0 0 6px;
+  font-size: 0.84rem;
+}
+
+.import-cols ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.84rem;
+  line-height: 1.7;
+}
+
+.import-cols p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.7;
+}
+
+.import-rules {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.7;
+}
+
+@media (max-width: 520px) {
+  .import-cols { grid-template-columns: 1fr; }
 }
 
 /* Ringkasan hasil import Excel */
