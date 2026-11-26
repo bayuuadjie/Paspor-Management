@@ -471,23 +471,28 @@ function ImportHelp({ onPick, onClose, notify }) {
       </p>
       <div className="import-cols">
         <div>
-          <h4>Dipakai (wajib ada)</h4>
+          <h4>Wajib ada</h4>
           <ul>
-            <li><b>No Porsi</b></li>
             <li><b>Nama</b></li>
             <li><b>Kecamatan</b></li>
             <li><b>No. Paspor</b></li>
           </ul>
         </div>
         <div>
-          <h4>Diabaikan</h4>
-          <p>No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap</p>
+          <h4>Opsional</h4>
+          <ul>
+            <li><b>No Porsi</b> — boleh kosong</li>
+            <li><b>Cetak VisaBio</b> — isi <i>sudah</i> atau <i>belum</i></li>
+            <li><b>Tanggal VisaBio</b> — mis. <i>2026/09/10</i></li>
+          </ul>
+          <p style={{ marginTop: '6px' }}>Diabaikan: No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap</p>
         </div>
       </div>
       <ul className="import-rules">
         <li>Baris dengan Nama, Kecamatan, atau No. Paspor kosong dilewati.</li>
         <li>No. Paspor duplikat (di file atau di database) dilewati.</li>
-        <li>Status visabio &amp; print visabio diisi <b>belum</b>, tanggal visabio dikosongkan.</li>
+        <li>Kecamatan yang beda huruf besar/kecil disamakan dengan data yang sudah ada, bukan dibuat baru.</li>
+        <li>Bila <b>Cetak VisaBio = sudah</b> dan <b>Tanggal VisaBio</b> terisi, <b>Status Visabio</b> otomatis <b>sudah</b>. Jika tidak, semua nilai visabio bawaan adalah <b>belum</b> / tanggal kosong.</li>
       </ul>
       <div className="row" style={{ marginTop: '16px', flexWrap: 'wrap', gap: '8px' }}>
         <button className="btn" onClick={template} disabled={downloading}>
@@ -508,7 +513,7 @@ function ImportResult({ result, onClose }) {
   return (
     <Modal title="Hasil Import Excel" onClose={onClose}>
       <p className="muted" style={{ marginBottom: '14px', fontSize: '0.86rem' }}>
-        Hanya kolom No Porsi, Nama, Kecamatan, dan No. Paspor yang disimpan. Kolom lain diabaikan. Status visabio dan print visabio diisi <b>belum</b>, tanggal visabio dikosongkan.
+        Kolom yang disimpan: No Porsi, Nama, Kecamatan, No. Paspor, dan (bila ada) Cetak VisaBio / Tanggal VisaBio. Kolom lain diabaikan. Status visabio menjadi <b>sudah</b> hanya bila Cetak VisaBio <b>sudah</b> dan tanggal visabio terisi; selain itu visabio diisi <b>belum</b>.
       </p>
       <div className="import-summary">
         <div className="import-stat ok"><b>{result.imported}</b><span>Berhasil ditambah</span></div>

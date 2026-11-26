@@ -50,6 +50,26 @@ ALTER TABLE passports DROP CONSTRAINT IF EXISTS passports_visabio_status_check, 
 UPDATE passports SET passport_physical='hilang' WHERE passport_physical='tidak';
 ALTER TABLE passports ADD CONSTRAINT passports_visabio_status_check CHECK (visabio_status IN ('sudah','belum','under review','ditolak','mengulang')),
   ADD CONSTRAINT passports_passport_physical_check CHECK (passport_physical IN ('ada','dipinjam','diserahkan','hilang'));`);
+// Satukan kecamatan yang sama hanya karena beda huruf besar/kecil. Nama yang paling banyak
+// dipakai passports yang dipertahankan; bila sama, yang paling lama (id terkecil) yang dipakai.
+await db.query(`WITH ranked AS (
+  SELECT d.id, d.name, lower(btrim(d.name)) AS k,
+    row_number() OVER (
+      PARTITION BY lower(btrim(d.name))
+      ORDER BY (SELECT count(*) FROM passports p WHERE p.kecamatan = d.name) DESC, d.id
+    ) AS rn
+  FROM districts d
+), canon AS (SELECT k, name FROM ranked WHERE rn = 1)
+UPDATE passports p SET kecamatan = c.name FROM canon c
+WHERE lower(btrim(p.kecamatan)) = c.k AND p.kecamatan IS DISTINCT FROM c.name`);
+await db.query(`DELETE FROM districts d USING (
+  SELECT d.id,
+    row_number() OVER (
+      PARTITION BY lower(btrim(d.name))
+      ORDER BY (SELECT count(*) FROM passports p WHERE p.kecamatan = d.name) DESC, d.id
+    ) AS rn
+  FROM districts d
+) x WHERE d.id = x.id AND x.rn > 1`);
 // Kecamatan wajib: terapkan NOT NULL hanya bila data lama tidak ada yang kosong.
 await db.query(`DO $$
 BEGIN
@@ -176,8 +196,11 @@ app.delete('/api/users/:id', auth, adminOnly, wrap(async (req, res) => {
 app.get('/api/districts', auth, wrap(async (_q, res) => res.json((await db.query(
   'SELECT d.id, d.name, count(p.id)::int AS total FROM districts d LEFT JOIN passports p ON p.kecamatan=d.name GROUP BY d.id ORDER BY d.name')).rows)));
 app.post('/api/districts', auth, wrap(async (req, res) => {
-  const name = String(req.body.name || '').trim();
+  const name = String(req.body.name || '').trim().replace(/\s+/g, ' ');
   if (!name || name.length > 60) return res.status(400).json({ error: 'Nama kecamatan 1-60 karakter' });
+  // Beda huruf besar/kecil bukan kecamatan baru.
+  const same = await db.query('SELECT name FROM districts WHERE lower(btrim(name))=lower($1) LIMIT 1', [name]);
+  if (same.rowCount) return res.status(409).json({ error: `Kecamatan "${same.rows[0].name}" sudah ada` });
   res.status(201).json((await db.query('INSERT INTO districts(name) VALUES($1) RETURNING *', [name])).rows[0]);
 }));
 app.delete('/api/districts/:id', auth, wrap(async (req, res) => {
@@ -208,7 +231,7 @@ const SORT_COLS = { name: 'name', created_at: 'created_at' };
 const queryPassports = async ({ q = '', kecamatan = '', visabio_status = '', visabio_printed = '', passport_physical = '', visabio_year = '', sort = 'name', dir = 'asc', limit = '' }) => {
   const col = SORT_COLS[sort] || SORT_COLS.name;
   const order = String(dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-  return (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR kecamatan=$2)
+  return (await db.query(`SELECT * FROM passports WHERE (name ILIKE $1 OR passport_number ILIKE $1 OR phone ILIKE $1 OR porsi_number ILIKE $1) AND ($2='' OR lower(btrim(kecamatan))=lower(btrim($2)))
     AND ($3='' OR visabio_status=$3) AND ($4='' OR visabio_printed=$4) AND ($5='' OR passport_physical=$5)
     AND ($6='' OR (visabio_date IS NOT NULL AND EXTRACT(YEAR FROM visabio_date)::text=$6))
     ORDER BY ${col} ${order} NULLS LAST, name ASC LIMIT $7`,
@@ -302,15 +325,43 @@ app.get('/api/passports/export', auth, wrap(async (req, res) => {
 }));
 
 // ---- import passports dari Excel (.xlsx/.xlsm)
-// Hanya 4 kolom yang dipakai: No Porsi, Nama, Kecamatan, No. Paspor.
+// Kolom inti: No Porsi, Nama, Kecamatan, No. Paspor.
+// Kolom opsional: Cetak VisaBio (sudah/belum) dan Tanggal VisaBio (YYYY/MM/DD).
 // Kolom lain di file (No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap) diabaikan.
-const IMPORT_HEADERS = ['No', 'No Porsi', 'Nama', 'Alamat', 'Kecamatan', 'Provinsi', 'Kab Kota', 'Usia', 'Kategori', 'Tahap', 'No. Paspor'];
+const IMPORT_HEADERS = ['No', 'No Porsi', 'Nama', 'Alamat', 'Kecamatan', 'Cetak VisaBio', 'Tanggal VisaBio', 'Provinsi', 'Kab Kota', 'Usia', 'Kategori', 'Tahap', 'No. Paspor'];
 const normHead = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const HEAD_MAP = {
   noporsi: 'porsi_number', nomorporsi: 'porsi_number',
   nama: 'name', namalengkap: 'name', namajemaah: 'name',
   kecamatan: 'kecamatan',
-  nopaspor: 'passport_number', nomorpaspor: 'passport_number'
+  nopaspor: 'passport_number', nomorpaspor: 'passport_number',
+  cetakvisabio: 'visabio_printed', printvisabio: 'visabio_printed', visabioprint: 'visabio_printed',
+  tanggalvisabio: 'visabio_date', tglvisabio: 'visabio_date', visabiodate: 'visabio_date'
+};
+const kecKey = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+// Nilai print visabio hanya boleh "sudah" atau "belum" (sesuai CHECK di database).
+const normPrinted = s => {
+  const v = String(s ?? '').trim().toLowerCase();
+  if (['sudah', 'sudah cetak', 'cetak', 'ya', 'yes', 'y', '1'].includes(v)) return 'sudah';
+  return 'belum'; // kosong, "belum", atau nilai lain dianggap belum
+};
+// Terima 2026/09/10, 2026-09-10, dan 10/09/2026; hasil selalu YYYY-MM-DD untuk kolom DATE.
+const normDate = s => {
+  const v = String(s ?? '').trim();
+  if (!v) return '';
+  let m = v.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  let y, mo, d;
+  if (m) [, y, mo, d] = m;
+  else {
+    m = v.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (!m) return '';
+    [, d, mo, y] = m;
+  }
+  const yy = Number(y), mm = Number(mo), dd = Number(d);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return '';
+  const iso = `${yy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  const check = new Date(`${iso}T00:00:00Z`);
+  return check.toISOString().slice(0, 10) === iso ? iso : ''; // tolak tanggal seperti 30/02
 };
 const cellText = cell => {
   const v = cell?.value;
@@ -331,7 +382,9 @@ app.get('/api/passports/import/template', auth, wrap(async (_q, res) => {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Data Paspor', { views: [{ state: 'frozen', ySplit: 1 }] });
   ws.columns = IMPORT_HEADERS.map(header => ({
-    header, width: header === 'Nama' ? 30 : header === 'Alamat' ? 34 : header === 'No. Paspor' ? 18 : 15
+    header,
+    width: header === 'Nama' ? 30 : header === 'Alamat' ? 34 : header === 'No. Paspor' ? 18
+      : header === 'Cetak VisaBio' ? 16 : header === 'Tanggal VisaBio' ? 18 : 15
   }));
   const head = ws.getRow(1);
   head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -340,12 +393,16 @@ app.get('/api/passports/import/template', auth, wrap(async (_q, res) => {
   const guide = wb.addWorksheet('Petunjuk');
   guide.columns = [{ width: 24 }, { width: 95 }];
   guide.addRows([
-    ['Kolom dipakai', 'No Porsi, Nama, Kecamatan, No. Paspor'],
+    ['Kolom wajib', 'Nama, Kecamatan, No. Paspor'],
+    ['Kolom opsional', 'No Porsi (boleh kosong), Cetak VisaBio (sudah / belum), Tanggal VisaBio (mis. 2026/09/10)'],
     ['Kolom diabaikan', 'No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap'],
     ['Wajib diisi', 'Nama, Kecamatan, No. Paspor. Baris kosong pada salah satu kolom ini dilewati.'],
     ['Duplikat', 'No. Paspor yang sudah terdaftar atau dobel di dalam file dilewati.'],
-    ['Nilai bawaan', 'Status visabio = belum, tanggal visabio kosong, print visabio = belum, paspor fisik = ada.'],
+    ['Aturan visabio', 'Bila Cetak VisaBio = sudah DAN Tanggal VisaBio terisi, Status Visabio otomatis menjadi sudah.'],
+    ['Nilai bawaan', 'Tanpa kolom opsional: status visabio = belum, tanggal visabio kosong, print visabio = belum, paspor fisik = ada.'],
+    ['Kecamatan', 'Bedanya huruf besar/kecil dianggap sama dengan kecamatan yang sudah ada, sehingga tidak membuat master baru.'],
     ['Format nomor', 'Simpan No. Paspor dan No Porsi sebagai teks/angka penuh agar tidak menjadi notasi ilmiah.'],
+    ['Format tanggal', 'Tanggal VisaBio menerima 2026/09/10, 2026-09-10, atau 10/09/2026.'],
     ['Catatan', 'Isi data pada sheet "Data Paspor" mulai baris 2. Sheet Petunjuk tidak dibaca saat import.']
   ]);
   guide.getRow(1).font = { bold: true };
@@ -375,8 +432,12 @@ app.post('/api/passports/import', auth, uploadExcel, wrap(async (req, res) => {
   for (let r = 1; r <= Math.min(ws.rowCount, 30); r++) {
     const found = new Map();
     ws.getRow(r).eachCell({ includeEmpty: false }, (cell, col) => {
-      const key = HEAD_MAP[normHead(cellText(cell))];
-      if (key && !found.has(key)) found.set(key, col);
+      // Bila dua header menempel dalam satu sel (hasil copy/scan: "Cetak VisaBio\tTanggal VisaBio"),
+      // Pecah juga menjadi dua nama kolom.
+      for (const part of cellText(cell).split(/[\t\r\n]+/)) {
+        const key = HEAD_MAP[normHead(part)];
+        if (key && !found.has(key)) found.set(key, col);
+      }
     });
     if (found.has('name') && found.has('passport_number') && found.has('kecamatan')) {
       headerRow = r; cols = found; break;
@@ -386,19 +447,44 @@ app.post('/api/passports/import', auth, uploadExcel, wrap(async (req, res) => {
     return res.status(400).json({ error: 'Header tidak ditemukan. Pastikan ada kolom Nama, Kecamatan, dan No. Paspor.' });
   }
 
+  // Kecamatan yang sudah ada (master dan data lama) dipakai sebagai ejaan resmi.
+  // Perbandingan memakai huruf kecil agar "KOTA BANDUNG" tidak membuat kecamatan baru.
+  const kecByName = new Map();
+  for (const [query, field] of [
+    ['SELECT name FROM districts', 'name'],
+    ['SELECT DISTINCT btrim(kecamatan) AS name FROM passports WHERE kecamatan IS NOT NULL AND btrim(kecamatan) <> \'\'', 'name']
+  ]) {
+    for (const d of (await db.query(query)).rows) {
+      const k = kecKey(d[field]);
+      if (k && !kecByName.has(k)) kecByName.set(k, d[field]);
+    }
+  }
+  const canonicalKec = s => {
+    const k = kecKey(s);
+    if (!k) return '';
+    if (!kecByName.has(k)) kecByName.set(k, s.trim().replace(/\s+/g, ' '));
+    return kecByName.get(k);
+  };
+
   const get = (row, key) => (cols.has(key) ? cellText(row.getCell(cols.get(key))) : '');
   const issues = [], seenInFile = new Set(), pending = [];
   let total = 0, skippedEmpty = 0, skippedDuplicate = 0;
 
   for (let r = headerRow + 1; r <= ws.rowCount; r++) {
     const row = ws.getRow(r);
+    const printed = normPrinted(get(row, 'visabio_printed'));
+    const date = normDate(get(row, 'visabio_date'));
     const raw = {
       name: get(row, 'name'),
-      kecamatan: get(row, 'kecamatan'),
+      kecamatan: canonicalKec(get(row, 'kecamatan')),
       passport_number: get(row, 'passport_number'),
-      porsi_number: get(row, 'porsi_number')
+      porsi_number: get(row, 'porsi_number'),
+      visabio_printed: printed,
+      visabio_date: date,
+      // Aturan user: cetak visabio "sudah" + tanggal visabio terisi -> status visabio "sudah".
+      visabio_status: printed === 'sudah' && date ? 'sudah' : 'belum'
     };
-    if (!Object.values(raw).some(Boolean)) continue; // baris benar-benar kosong
+    if (![raw.name, raw.passport_number, get(row, 'kecamatan'), raw.porsi_number, get(row, 'visabio_printed'), get(row, 'visabio_date')].some(Boolean)) continue; // baris benar-benar kosong
     total++;
 
     const missing = requiredPassport(raw);
@@ -418,7 +504,6 @@ app.post('/api/passports/import', auth, uploadExcel, wrap(async (req, res) => {
       row: r, no,
       body: {
         ...raw,
-        visabio_status: 'belum', visabio_date: '', visabio_printed: 'belum',
         passport_physical: 'ada', bin_binti: '', birth_date: '', phone: '', notes: ''
       }
     });

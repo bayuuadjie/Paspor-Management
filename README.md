@@ -20,13 +20,14 @@ Hanya dua pilihan: **Nama** dan **Tanggal Ditambahkan**. Kolom lain (tanggal lah
 ## Import data paspor dari Excel
 Tombol **Import Excel** di halaman Data Paspor membuka panduan nama kolom dan tombol **Unduh Template** sebelum memilih file. File yang diterima: `.xlsx`/`.xlsm` (maks. 10 MB). Header dicari otomatis di 30 baris pertama, jadi boleh ada judul di atas tabel. Template berisi sheet `Data Paspor` (dipakai import) dan sheet `Petunjuk` (diabaikan).
 
-Kolom yang dikenali: **No Porsi**, **Nama**, **Kecamatan**, **No. Paspor** (nama header boleh tanpa tanda titik, mis. `No Paspor`). Kolom **No**, **Alamat**, **Provinsi**, **Kab Kota**, **Usia**, **Kategori**, dan **Tahap** diabaikan.
+Kolom wajib: **Nama**, **Kecamatan**, **No. Paspor** (nama header boleh tanpa tanda titik, mis. `No Paspor`). Kolom opsional yang tetap disimpan bila ada: **No Porsi**, **Cetak VisaBio**, **Tanggal VisaBio**. Kolom **No**, **Alamat**, **Provinsi**, **Kab Kota**, **Usia**, **Kategori**, dan **Tahap** diabaikan.
 
 Aturan baris:
 - Baris dengan **Nama**, **No. Paspor**, atau **Kecamatan** kosong dilewati.
 - Nomor paspor yang sudah terdaftar atau dobel di dalam file dilewati (huruf besar/kecil dianggap sama).
-- Data baru disimpan dengan status visabio **belum**, tanggal visabio kosong, print visabio **belum**, paspor fisik **ada**.
-- Kecamatan baru otomatis masuk ke master kecamatan sehingga bisa dipakai di filter.
+- **Cetak VisaBio** diisi `sudah` atau `belum` (nilai lain/kosong dianggap `belum`). **Tanggal VisaBio** menerima `2026/09/10`, `2026-09-10`, atau `10/09/2026`.
+- Bila **Cetak VisaBio = sudah** dan **Tanggal VisaBio** terisi, **Status Visabio** otomatis menjadi **sudah**. Jika tidak, status visabio **belum**, tanggal visabio kosong, print visabio **belum**, paspor fisik **ada**.
+- Kecamatan dibandingkan tanpa mempedulikan huruf besar/kecil: ejaan yang sudah ada di master (atau di data lama) dipakai lagi, sehingga `KOTA BANDUNG` tidak membuat kecamatan baru. Kecamatan benar-benar baru otomatis masuk ke master sehingga bisa dipakai di filter. Kecamatan ganda yang sudah terlanjur ada dari import lama disatukan otomatis saat aplikasi start.
 
 Hasil import menampilkan jumlah baris berhasil, dilewati karena field wajib kosong, dan dilewati karena duplikat, lengkap dengan nomor baris yang bermasalah.
 
