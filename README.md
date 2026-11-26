@@ -17,6 +17,21 @@ Stack: React (Vite) + Node (Express) + PostgreSQL + Python (OCR Tesseract/Passpo
 ## Pengurutan data
 Hanya dua pilihan: **Nama** dan **Tanggal Ditambahkan**. Kolom lain (tanggal lahir, tanggal visabio, dll.) tidak bisa dipakai sebagai pengurutan, baik dari UI maupun lewat API.
 
+## Import data paspor dari Excel
+Tombol **Import Excel** di halaman Data Paspor menerima file `.xlsx`/`.xlsm` (maks. 10 MB). Header dicari otomatis di 30 baris pertama, jadi boleh ada judul di atas tabel.
+
+Kolom yang dikenali: **No Porsi**, **Nama**, **Kecamatan**, **No. Paspor** (nama header boleh tanpa tanda titik, mis. `No Paspor`). Kolom **No**, **Alamat**, **Provinsi**, **Kab Kota**, **Usia**, **Kategori**, dan **Tahap** diabaikan.
+
+Aturan baris:
+- Baris dengan **Nama**, **No. Paspor**, atau **Kecamatan** kosong dilewati.
+- Nomor paspor yang sudah terdaftar atau dobel di dalam file dilewati (huruf besar/kecil dianggap sama).
+- Data baru disimpan dengan status visabio **belum**, tanggal visabio kosong, print visabio **belum**, paspor fisik **ada**.
+- Kecamatan baru otomatis masuk ke master kecamatan sehingga bisa dipakai di filter.
+
+Hasil import menampilkan jumlah baris berhasil, dilewati karena field wajib kosong, dan dilewati karena duplikat, lengkap dengan nomor baris yang bermasalah.
+
+Agar nomor tidak berubah menjadi notasi ilmiah (mis. `1.23457E+11`), simpan kolom No. Paspor dan No Porsi sebagai teks atau angka dengan format penuh di Excel.
+
 ## OCR dari beberapa perangkat
 - Satu akun hanya bisa aktif di satu perangkat (sesi akan ditolak dengan pesan "sedang aktif di perangkat lain"). Untuk scan dari beberapa perangkat, pakai akun berbeda.
 - Di backend, satu akun hanya boleh punya satu scan berjalan; kiriman foto ulang yang bertumpuk ditolak (409) dan foto baru membatalkan scan lama di browser.

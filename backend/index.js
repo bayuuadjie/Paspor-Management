@@ -14,6 +14,13 @@ const uploadImage = (req, res, next) => upload.single('file')(req, res, err => {
   if (err) return res.status(400).json({ error: 'Berkas gambar tidak dapat diunggah.' });
   next();
 });
+const uploadExcel = (req, res, next) => upload.single('file')(req, res, err => {
+  if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'Ukuran file Excel maksimal 10 MB.' });
+  }
+  if (err) return res.status(400).json({ error: 'Berkas Excel tidak dapat diunggah.' });
+  next();
+});
 
 // Durasi idle session (10 menit dalam milidetik)
 const SESSION_IDLE_MS = 10 * 60 * 1000;
@@ -292,6 +299,151 @@ app.get('/api/passports/export', auth, wrap(async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="data-paspor-${stamp}.xlsx"`);
   await wb.xlsx.write(res); res.end();
+}));
+
+// ---- import passports dari Excel (.xlsx/.xlsm)
+// Hanya 4 kolom yang dipakai: No Porsi, Nama, Kecamatan, No. Paspor.
+// Kolom lain di file (No, Alamat, Provinsi, Kab Kota, Usia, Kategori, Tahap) diabaikan.
+const normHead = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const HEAD_MAP = {
+  noporsi: 'porsi_number', nomorporsi: 'porsi_number',
+  nama: 'name', namalengkap: 'name', namajemaah: 'name',
+  kecamatan: 'kecamatan',
+  nopaspor: 'passport_number', nomorpaspor: 'passport_number'
+};
+const cellText = cell => {
+  const v = cell?.value;
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === 'number') return String(cell.text ?? v).trim();
+  if (typeof v === 'object') {
+    if (Array.isArray(v.richText)) return v.richText.map(t => t.text).join('').trim();
+    if ('result' in v) return cellText({ value: v.result });
+    if ('text' in v) return String(v.text ?? '').trim();
+    return ''; // sel formula error / sel kosong
+  }
+  return String(v).trim();
+};
+
+app.post('/api/passports/import', auth, uploadExcel, wrap(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Pilih file Excel (.xlsx) terlebih dahulu.' });
+  if (!/\.xls[mx]$/i.test(req.file.originalname)) {
+    return res.status(400).json({ error: 'Format berkas harus .xlsx atau .xlsm.' });
+  }
+
+  let wb;
+  try {
+    wb = await new ExcelJS.Workbook().xlsx.load(req.file.buffer);
+  } catch {
+    return res.status(400).json({ error: 'File Excel tidak dapat dibaca. Pastikan file tidak rusak dan berformat .xlsx.' });
+  }
+  const ws = wb.worksheets[0];
+  if (!ws) return res.status(400).json({ error: 'File Excel tidak memiliki worksheet.' });
+
+  // Cari baris header di 30 baris pertama agar judul/baris keterangan di atasnya tidak mengganggu.
+  let headerRow = 0, cols = null;
+  for (let r = 1; r <= Math.min(ws.rowCount, 30); r++) {
+    const found = new Map();
+    ws.getRow(r).eachCell({ includeEmpty: false }, (cell, col) => {
+      const key = HEAD_MAP[normHead(cellText(cell))];
+      if (key && !found.has(key)) found.set(key, col);
+    });
+    if (found.has('name') && found.has('passport_number') && found.has('kecamatan')) {
+      headerRow = r; cols = found; break;
+    }
+  }
+  if (!headerRow) {
+    return res.status(400).json({ error: 'Header tidak ditemukan. Pastikan ada kolom Nama, Kecamatan, dan No. Paspor.' });
+  }
+
+  const get = (row, key) => (cols.has(key) ? cellText(row.getCell(cols.get(key))) : '');
+  const issues = [], seenInFile = new Set(), pending = [];
+  let total = 0, skippedEmpty = 0, skippedDuplicate = 0;
+
+  for (let r = headerRow + 1; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r);
+    const raw = {
+      name: get(row, 'name'),
+      kecamatan: get(row, 'kecamatan'),
+      passport_number: get(row, 'passport_number'),
+      porsi_number: get(row, 'porsi_number')
+    };
+    if (!Object.values(raw).some(Boolean)) continue; // baris benar-benar kosong
+    total++;
+
+    const missing = requiredPassport(raw);
+    if (missing) {
+      skippedEmpty++;
+      issues.push({ row: r, reason: missing });
+      continue;
+    }
+    const no = raw.passport_number.toUpperCase();
+    if (seenInFile.has(no)) {
+      skippedDuplicate++;
+      issues.push({ row: r, reason: 'Nomor paspor dobel di dalam file' });
+      continue;
+    }
+    seenInFile.add(no);
+    pending.push({
+      row: r, no,
+      body: {
+        ...raw,
+        visabio_status: 'belum', visabio_date: '', visabio_printed: 'belum',
+        passport_physical: 'ada', bin_binti: '', birth_date: '', phone: '', notes: ''
+      }
+    });
+  }
+
+  // Cek duplikat terhadap database sekaligus, lalu pakai ON CONFLICT untuk menjaga jika ada yang masuk bersamaan.
+  const known = seenInFile.size
+    ? new Set((await db.query('SELECT passport_number FROM passports WHERE passport_number = ANY($1::text[])', [[...seenInFile]])).rows.map(x => x.passport_number))
+    : new Set();
+  const fresh = [];
+  for (const item of pending) {
+    if (known.has(item.no)) {
+      skippedDuplicate++;
+      issues.push({ row: item.row, reason: 'Nomor paspor sudah terdaftar' });
+    } else fresh.push(item);
+  }
+
+  const newDistricts = new Set();
+  let inserted = 0;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    for (const item of fresh) {
+      const r = await client.query(
+        `INSERT INTO passports(${F}) VALUES(${F.map((_, i) => '$' + (i + 1))}) ON CONFLICT (passport_number) DO NOTHING RETURNING kecamatan`,
+        vals(item.body)
+      );
+      if (r.rowCount) { inserted++; newDistricts.add(r.rows[0].kecamatan); }
+      else {
+        skippedDuplicate++;
+        issues.push({ row: item.row, reason: 'Nomor paspor sudah terdaftar' });
+      }
+    }
+    // Daftarkan kecamatan hasil import ke master agar bisa dipakai di filter.
+    for (const name of newDistricts) {
+      await client.query('INSERT INTO districts(name) VALUES($1) ON CONFLICT (name) DO NOTHING', [name]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  issues.sort((a, b) => a.row - b.row);
+  res.json({
+    total,
+    imported: inserted,
+    skippedEmpty,
+    skippedDuplicate,
+    issues: issues.slice(0, 200),
+    issuesTruncated: issues.length > 200,
+    message: `Import selesai: ${inserted} data berhasil ditambahkan, ${skippedEmpty} dilewati karena field wajib kosong, ${skippedDuplicate} dilewati karena nomor paspor duplikat.`
+  });
 }));
 
 app.post('/api/passports', auth, wrap(async (req, res) => {

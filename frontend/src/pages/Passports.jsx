@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Download,
   FileText,
+  FileUp,
   Filter,
   Pencil,
   Plus,
@@ -430,6 +431,34 @@ function useVisabioYears() {
   return years;
 }
 
+function ImportResult({ result, onClose }) {
+  const issues = result.issues || [];
+  return (
+    <Modal title="Hasil Import Excel" onClose={onClose}>
+      <p className="muted" style={{ marginBottom: '14px', fontSize: '0.86rem' }}>
+        Hanya kolom No Porsi, Nama, Kecamatan, dan No. Paspor yang disimpan. Kolom lain diabaikan. Status visabio dan print visabio diisi <b>belum</b>, tanggal visabio dikosongkan.
+      </p>
+      <div className="import-summary">
+        <div className="import-stat ok"><b>{result.imported}</b><span>Berhasil ditambah</span></div>
+        <div className="import-stat warn"><b>{result.skippedEmpty}</b><span>Wajib kosong</span></div>
+        <div className="import-stat bad"><b>{result.skippedDuplicate}</b><span>Duplikat</span></div>
+      </div>
+      {issues.length > 0 && (
+        <div className="import-issues">
+          <h4>Baris yang dilewati</h4>
+          <ul>
+            {issues.slice(0, 20).map((x, i) => (
+              <li key={i}><b>Baris {x.row}:</b> {x.reason}</li>
+            ))}
+          </ul>
+          {issues.length > 20 && <p className="muted">… dan {issues.length - 20} baris lainnya.</p>}
+        </div>
+      )}
+      <button className="btn primary block" onClick={onClose}>Tutup</button>
+    </Modal>
+  );
+}
+
 export default function Passports({ openNew }) {
   const notify = useToast();
   const [rows, setRows] = useState(null);
@@ -447,6 +476,9 @@ export default function Passports({ openNew }) {
   const [showFilters, setShowFilters] = useState(false);
   const [form, setForm] = useState(openNew ? empty : null);
   const [page, setPage] = useState(1);
+  const [importResult, setImportResult] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const impRef = useRef();
   const visabioYears = useVisabioYears();
 
   const loadD = () => api('/districts').then(setDistricts);
@@ -488,6 +520,25 @@ export default function Passports({ openNew }) {
       notify(`Data berhasil diekspor ke format ${fmt.toUpperCase()}`);
     } catch (e) {
       notify(e.message, 'bad');
+    }
+  };
+
+  const importData = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // agar file yang sama bisa dipilih lagi
+    if (!file || importing) return;
+    setImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const result = await api('/passports/import', { method: 'POST', body: fd });
+      setImportResult(result);
+      notify(`${result.imported} paspor berhasil diimport`);
+      await Promise.all([load(), loadD()]);
+    } catch (e) {
+      notify(e.message, 'bad');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -558,6 +609,17 @@ export default function Passports({ openNew }) {
           <FileText size={17} />
           <span>PDF</span>
         </button>
+        <button className="btn" onClick={() => impRef.current.click()} disabled={importing} title="Import data dari file Excel (.xlsx)">
+          <FileUp size={17} />
+          <span>{importing ? 'Mengimport…' : 'Import Excel'}</span>
+        </button>
+        <input
+          ref={impRef}
+          type="file"
+          accept=".xlsx,.xlsm"
+          hidden
+          onChange={importData}
+        />
         <button className="btn primary" onClick={() => setForm(empty)}>
           <Plus size={17} />
           <span>Tambah Paspor</span>
@@ -838,6 +900,7 @@ export default function Passports({ openNew }) {
           </Empty>
         )}
       </div>
+      {importResult && <ImportResult result={importResult} onClose={() => setImportResult(null)} />}
     </>
   );
 }
